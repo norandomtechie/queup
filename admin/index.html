@@ -193,7 +193,7 @@
             window.roomdata.forEach((room_o, i) => {
                 var btn = `<button class="config_btn config_select" onclick="changeRoom(${i})" id="btn_${room_o["room"]}">${room_o["room"]}</button>`;
                 document.getElementById("roomlist").innerHTML += btn;
-            })
+            });
             changeRoom(0);
         }
         function clock() {

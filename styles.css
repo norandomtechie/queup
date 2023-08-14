@@ -43,26 +43,20 @@ nav > div {
     align-items: center;
     justify-content: center;
 }
-
-#navcenter h2,
 #navcenter p {
-    margin-top: 2%;
-    margin-bottom: 2%;
-}
-#navcenter p {
-    font-size: calc(1vw + 2vh);
+    margin: 0;
 }
 
-#navside2,
-#navside2 div {
+#navside2, #slider {
+    position: relative;
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: space-around;
+    justify-content: flex-end;
 }
-
-#navside2 p {
-    font-size: 18px;
+#slider {
+    z-index: 2; 
+    margin-right: 5%;
 }
 
 #navside2>a {
@@ -136,6 +130,7 @@ h3,
 h4,
 p,
 #adddetails input,
+#navside2 button,
 label {
     font-family: 'Heebo';
     color: var(--text-color);
@@ -146,13 +141,11 @@ html {
     height: 100vh;
 }
 body {
-    opacity: 0;
     margin: 0;
     height: inherit;
     display: flex;
     flex-direction: column;
     background-color: var(--bg-color);
-    transition: all 0.3s;
 }
 @keyframes fadein {
     from {
@@ -162,26 +155,48 @@ body {
         opacity: 1;
     }
 }
-.queuetop {
+.roomtop {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     justify-content: center;
     width: 90%;
 }
-.queuetitle {
+.roomtitle, .roomsubtitle {
     font-size: 36px;
     font-family: 'Heebo';
     margin: 2% 0 1% 0;
+    text-decoration: underline;
+}
+.roomtitle {
+    margin-bottom: 0;
+}
+.roomsubtitle {
+	font-size: 26px;
+	margin-top: 0;
+	font-style: italic;
+	opacity: 0.5;
+	width: 100%;
+	cursor: pointer;
+}
+.roomsubtitle.textadded {
+    opacity: 1;
+    font-style: normal;
+    text-decoration-line: none;
+}
+.queuetitle {
+    font-size: 30px;
+    font-family: 'Heebo';
+    margin: 1% 0 1% 0;
+    cursor: pointer;
 }
 .waiter {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 120px;
+    width: 240px;
     height: 120px;
-    border-radius: 100%;
     border: 1px solid rgba(100, 100, 100, 0.5);
     margin: 0.8%;
     background-color: var(--waiter-bg-0);
@@ -212,28 +227,28 @@ body {
 .is-self p, .waiter p {
     color: var(--waiter-p-color);
 }
-.station_text, .time_text {
+.username_text, .time_text {
     font-family: Heebo; 
     font-weight: normal;
     margin: 0;
     font-size: 16px;
     font-weight: bold;
 }
-.station_text {
-    font-size: 56px;
+.username_text {
+    font-size: 28px;
 }
 .queue {
     display: flex;
     flex-direction: row;
     align-items: center;
     justify-content: flex-start;
-    flex-wrap: nowrap;
-    overflow-x: scroll;
-    width: 100%;
+    flex-wrap: wrap;
+    overflow-x: auto;
+    width: calc(100% - 1vw);
     height: max-content;
     padding: 1vh 1vw 1vh 1vw;
-    border-radius: 15px;
-    border: 1px solid rgba(100, 100, 100, 0.5);
+    border-radius: 5px;
+    border: 1px solid var(--softer-btn-border);
     transition: all 0.2s;
 }
 .container {
@@ -246,8 +261,8 @@ body {
     flex-grow: 1;
     transition: all 0.2s;
 }
-#queues {
-    display: var(--queues-show);
+#rooms {
+    display: var(--rooms-show);
     justify-content: flex-start;
 }
 #timer {
@@ -291,7 +306,7 @@ body {
     flex-direction: row;
     align-items: center;
     justify-content: space-evenly;
-    width: 100%
+    width: 100%;
 }
 #stopstart, #resettimer {
     display: flex;
@@ -307,14 +322,30 @@ body {
     cursor: pointer;
     z-index: 3;
 }
-:root, [util="queues"] {
-    --queues-show: flex;
+#queueadd {
+    background-color: var(--bg-hover);
+    margin-top: 4vh;
+    justify-content: center;
+    display: flex;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+#queueadd * {
+    transition: all 0.2s;
+    font-size: 1.75em;
+    font-weight: bold;
+}
+#queueadd:hover {
+    background: var(--boilermaker-gold-transparent);
+}
+:root, [util="rooms"] {
+    --rooms-show: flex;
     --timer-show: none;
     --util-switch-position: -15px;
     --util-switch-icon: "🙋‍♂️";
 }
 [util="timer"] {
-    --queues-show: none;
+    --rooms-show: none;
     --timer-show: flex;
     --util-switch-position: 25px;
     --util-switch-icon: "⏰";
@@ -335,53 +366,6 @@ body {
     --roomdisabled-switch-position: 25px;
     --roomdisabled-switch-icon: "🔴";
 }
-:root {
-    --waiter-bg-0: hsl(180, 100%, 50%);
-    --waiter-bg-1: hsl(125, 100%, 60%);
-    --waiter-bg-2: hsl(60, 100%, 60%);
-    --waiter-bg-3: hsl(30, 100%, 60%);
-    --waiter-bg-4: hsl(0, 100%, 65%);
-    --waiter-bg-5: hsl(290, 100%, 65%);
-    --switch-icon: "🌙";
-    --switch-position: 25px;
-    --themeswitch-bg-color: #2a2a2b;
-    --waiter-p-color: black;
-    --bg-color: #1a1a1b;
-    --bg-hover: #000;
-    --self-bg-color: #112;
-    --text-color: #eee;
-    --disabled-text-color: rgba(240, 240, 240, 0.7);
-    --softer-btn-border: rgba(240, 240, 240, 0.5);
-    --flipped-btn-color: #fff;
-    --header-color: #333;
-    --flipped-text-color: #222;
-    --btn-color: #222;
-    --hsl-luminance: 100%;
-}
-[theme="light"] {
-    --waiter-bg-0: hsl(180, 100%, 35%);
-    --waiter-bg-1: hsl(125, 100%, 30%);
-    --waiter-bg-2: hsl(50, 100%, 42.5%);
-    --waiter-bg-3: hsl(30, 100%, 40%);
-    --waiter-bg-4: hsl(0, 100%, 40%);
-    --waiter-bg-5: hsl(270, 100%, 40%);
-    --switch-icon: "☀️";
-    --switch-position: -15px;
-    --themeswitch-bg-color: #dddddf;
-    --waiter-p-color: white;
-    --bg-color: #e2e2e2;
-    --bg-hover: #ddd;
-    --self-bg-color: #eef;
-    --text-color: #000;
-    --disabled-text-color: rgba(0, 0, 0, 0.7);
-    --softer-btn-border: rgba(10, 10, 10, 0.5);
-    --flipped-btn-color: #222;
-    --header-color: #ccc;
-    --flipped-text-color: #fff;
-    --btn-color: #fff;
-    --hsl-luminance: 30%;
-}
-
 #topadminpanel {
     align-items: flex-start;
     justify-content: center;
@@ -479,4 +463,295 @@ hr {
     width: calc(1vw + 1vh);
     height: calc(1vw + 1vh);
     top: 135px;
+}
+
+/* roomoverlay */
+.queueoverlay {
+    width: 100vw;
+    height: 100vh;
+    position: fixed;
+    top: 0;
+    left: 0;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-color);
+}
+.queueoverlay .panel {
+    width: 50%;
+    height: 90%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+.queueoverlay .panel:first-child {
+    border-right: 1px solid var(--softer-btn-border);
+}
+.queueoverlay .panel label {
+    font-size: 22px;
+    color: var(--text-color);
+    margin: 10px;
+}
+.queueoverlay .panel input {
+    width: 60%;
+    height: 4vh;
+    margin: 10px;
+    border: 1px solid var(--softer-btn-border);
+    background-color: transparent;
+    color: var(--text-color);
+    font-size: 18px;
+    padding: 5px;
+    text-align: center;
+}
+.btn {
+    width: max-content;
+    height: 4vh;
+    align-items: center;
+    justify-content: center;
+    display: none; 
+    padding: 0.5em; 
+    font-size: 22px; 
+    cursor: pointer; 
+    margin: 0 2% 0 2%;
+    border: 1px solid var(--softer-btn-border);
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-size: 18px;
+    transition: background-color 0.2s;
+}
+.btn:hover, .queueoverlay .panel input[type="button"]:hover {
+    background: var(--boilermaker-gold-transparent);
+}
+.collapsible {
+    position: absolute;
+    top: 100%;
+    width: 30vw;
+    display: none;
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-evenly;
+    flex-wrap: wrap;
+	background-color: var(--bg-color);
+    margin-top: -1px;
+	border: 1px solid transparent;
+	border-radius: 0 0 5px 5px;
+    padding: 0.75em;
+    z-index: 1;
+}
+.collapsible * {
+    display: none;
+}
+#gear, #help {
+	display: block;
+	font-size: 2em;
+	margin: -1px 0 0 35px;
+	padding: 5px 10px;
+	cursor: pointer;
+	border: 1px solid transparent;
+    border-radius: 5px;
+    transition: border 0.2s;
+}
+#help.opened {
+    z-index: 5;
+    border: 1px solid var(--softer-btn-border);
+}
+.collapsible.opened {
+    display: flex;
+    border: 1px solid var(--softer-btn-border);
+    background-color: var(--bg-hover);
+}
+#gear.opened {
+	border: 1px solid var(--softer-btn-border);
+	border-bottom: 1px solid var(--bg-hover);
+    background-color: var(--bg-hover);
+	z-index: 2;
+}
+.collapsible.opened *:not(.hide-if-not-owner) {
+    display: block!important;
+    height: max-content!important;
+    opacity: 1!important;
+    margin: 2vh 0!important;
+}
+.collapsible-in-overlay, .hide-if-not-owner {
+    display: none!important;
+    cursor: default!important;
+}
+#collapse {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    position:relative;
+}
+.queueoverlay .panel input[type="button"] {
+    height: 5vh;
+    transition: background-color 0.2s;
+}
+
+/* https://code-boxx.com/responsive-css-speech-bubbles/ */
+.row { flex-direction: row; }
+.col { flex-direction: column; }
+.helpdiv {
+    display: flex;
+}
+
+.tutorialoverlay {
+    position: fixed;
+    z-index: -1;
+    opacity: 0;
+    width: 90vw;
+    height: 90vh;
+    top: 2.5vh;
+    left: 4vw;
+    background-color: var(--bg-hover);
+    color: var(--text-color);
+    border: 1px solid var(--softer-btn-border);
+    padding: 1vh 1vw 1vh 1vw;
+    overflow-y: auto;
+    transition: all 0.2s;
+}
+.tutorialoverlay.opened {
+    z-index: 4;
+    opacity: 1;
+}
+.tutorialoverlay * {
+    font-size: x-large;
+    font-family: 'Heebo';
+}
+.center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+video {
+    border: 2px solid var(--softer-btn-border);
+    padding: 0.5em;
+    max-width: 75vw;
+}
+
+
+/* for mobile screens */
+@media only screen and (max-device-width: 600px) {
+    .waiter-add {
+        width: 100px;
+        height: 100px;
+    }
+    .queueoverlay .panel input {
+        width: 90%;
+        font-size: 20px;
+        height: 6vh;
+    }
+    #createroomrow {
+        flex-direction: column;
+        margin-bottom: 25px;
+    }
+    .queueoverlay {
+        flex-direction: column;
+        margin-top: 20px;
+    }
+    .queueoverlay .panel {
+        width: 90%;
+        height: 50%;
+    }
+    .queueoverlay .panel:first-child {
+        border-right: 0;
+        border-bottom: 1px solid var(--softer-btn-border);
+    }
+    #navside1, #navcenter {
+        display: none;
+    }
+    #navside2 {
+        align-items: flex-start;
+        justify-content: space-between;
+        width: 90%;
+    }
+    #gear, #help {
+        margin-top: -15px;
+    }
+    #help.opened {
+        position: absolute;
+        top: 3vh;
+        background-color: var(--bg-color);
+    }
+    .collapsible {
+        display: none;
+        width: 45vw;
+    }
+    .collapsible.opened {
+        display: flex;
+    }
+    .queue {
+        justify-content: center;
+    }
+    .tutorialoverlay {
+        padding: 2vh 2vw 2vh 2vw;
+        height: 85vh;
+    }
+    .tutorialoverlay * {
+        font-size: large;
+    }
+    nav {
+        height: 15vh;
+    }
+    #slider {
+        margin-right: 0;
+    }
+}
+:root {
+    --waiter-bg-0: hsl(180, 100%, 50%);
+    --waiter-bg-1: hsl(125, 100%, 60%);
+    --waiter-bg-2: hsl(60, 100%, 60%);
+    --waiter-bg-3: hsl(30, 100%, 60%);
+    --waiter-bg-4: hsl(0, 100%, 65%);
+    --waiter-bg-5: hsl(290, 100%, 65%);
+    --boilermaker-gold: #cfb991;
+    --boilermaker-gold-transparent: #cfb991aa;
+    --boilermaker-aged: #8e6f3e;
+    --boilermaker-aged-transparent: #8e6f3eaa;
+    --switch-icon: "🌙";
+    --switch-position: 25px;
+    --themeswitch-bg-color: #2a2a2b;
+    --waiter-p-color: black;
+    --bg-color: #1a1a1b;
+    --bg-hover: #232324;
+    --self-bg-color: #112;
+    --text-color: #eee;
+    --disabled-text-color: rgba(240, 240, 240, 0.7);
+    /* --softer-btn-border: rgba(240, 240, 240, 0.5); */
+    --softer-btn-border: #cfb991aa;
+    --flipped-btn-color: #fff;
+    --header-color: #333;
+    --flipped-text-color: #222;
+    --btn-color: #222;
+    --hsl-luminance: 100%;
+}
+[theme="light"] {
+    --waiter-bg-0: hsl(180, 100%, 35%);
+    --waiter-bg-1: hsl(125, 100%, 30%);
+    --waiter-bg-2: hsl(50, 100%, 42.5%);
+    --waiter-bg-3: hsl(30, 100%, 40%);
+    --waiter-bg-4: hsl(0, 100%, 40%);
+    --waiter-bg-5: hsl(270, 100%, 40%);
+    --boilermaker-gold: #cfb991;
+    --boilermaker-gold-transparent: #cfb991aa;
+    --boilermaker-aged: #8e6f3e;
+    --boilermaker-aged-transparent: #8e6f3eaa;
+    --switch-icon: "☀️";
+    --switch-position: -15px;
+    --themeswitch-bg-color: #dddddf;
+    --waiter-p-color: white;
+    --bg-color: #e2e2e2;
+    --bg-hover: #d7d7d7;
+    --self-bg-color: #eef;
+    --text-color: #000;
+    --disabled-text-color: rgba(0, 0, 0, 0.7);
+    /* --softer-btn-border: rgba(10, 10, 10, 0.5); */
+    --softer-btn-border: #8e6f3e;
+    --flipped-btn-color: #222;
+    --header-color: #ccc;
+    --flipped-text-color: #fff;
+    --btn-color: #fff;
+    --hsl-luminance: 30%;
 }

@@ -4,100 +4,326 @@
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" charset="UTF-8">
-    <title>LabUtils</title>
+    <title>QueUp</title>
     <link href="styles.css" rel="stylesheet">
 </head>
 <body>
     <nav>
         <div id="navside1"><p id="time">Date/time here</p></div>
         <div id="navcenter">
-            <p>labutils</p>
-            <p style="font-size: calc(0.5vw + 1.25vh);">Section Information Here</p>
+            <p style="font-size: 40px">QueUp</p>
+            <p style="font-size: 28px">Queuing System</p>
         </div>
         <div id="navside2">
-            <div>
-                <span class="switchCylinder" role="img" aria-label="theme_switch" onclick="toggleTheme()">
+            <div id="slider">
+                <span class="switchCylinder" role="img" aria-label="theme_switch" onclick="switchTheme()">
                     <span class="switchCircle" id="themeSwitchCircle"></span>
                 </span>
             </div>
-            <div>
-                <span class="switchCylinder" role="img" aria-label="util_switch" onclick="toggleUtil()">
-                    <span class="switchCircle" id="utilSwitchCircle"></span>
-                </span>
+            <div id="collapse" class="collapsible-in-overlay">
+                <div style='display: flex; flex-direction: row;'>
+                    <p id="help" class="">❓</p>
+                    <p id="gear" class="">⚙️</p>
+                </div>
+                <div class="collapsible">
+                    <button class="btn" id="leaveroom" onclick="returnToOverlay()">Leave room</button>
+                    <button class="btn" id="closeroom" onclick="closeRoom()">Close room</button>
+                    <button class="btn" id="addroomowners" onclick="modRoomOwners('add')">Add room owners</button>
+                    <button class="btn" id="delroomowners" onclick="modRoomOwners('del')">Delete room owners</button>
+                </div>
             </div>
         </div>
     </nav>
-    <div class="container" id="queues"></div>
-    <div class="container" id="timer">
-        <div id="innertimer">
-            <h3 id="timertext" contenteditable onblur="checkTime(event)" onkeydown="checkTime(event)">1:20:00</h3>
-            <div class="row">
-                <button id="stopstart" onclick="toggleTimer(event)">▶</button>
-                <button id="resettimer" onclick="resetTimer()">
-                    <!-- https://www.flaticon.com/free-icon/refresh_126561?term=repeat&page=1&position=4&page=1&position=4&related_id=126561&origin=tag -->
-                    <svg width="50%" height="50%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
-                        viewBox="0 0 489.935 489.935" xml:space="preserve">
-                    <g>
-                        <path d="M278.235,33.267c-116.7,0-211.6,95-211.6,211.7v0.7l-41.9-63.1c-4.1-6.2-12.5-7.9-18.7-3.8c-6.2,4.1-7.9,12.5-3.8,18.7
-                            l60.8,91.5c2.2,3.3,5.7,5.4,9.6,5.9c0.6,0.1,1.1,0.1,1.7,0.1c3.3,0,6.5-1.2,9-3.5l84.5-76.1c5.5-5,6-13.5,1-19.1
-                            c-5-5.5-13.5-6-19.1-1l-56.1,50.7v-1c0-101.9,82.8-184.7,184.6-184.7s184.7,82.8,184.7,184.7s-82.8,184.7-184.6,184.7
-                            c-49.3,0-95.7-19.2-130.5-54.1c-5.3-5.3-13.8-5.3-19.1,0c-5.3,5.3-5.3,13.8,0,19.1c40,40,93.1,62,149.6,62
-                            c116.6,0,211.6-94.9,211.6-211.7S394.935,33.267,278.235,33.267z" stroke-width="0.5" fill="var(--text-color)">
-                    </g>
-                    </svg>
-                </button>
+    <div class="container" id="rooms">
+        <div id="queueadddiv" class="roomtop" onclick="createQueue()">
+            <div id="queueadd" class="queue">
+                <p>Add queue</p>
             </div>
-            <svg width="100%" height="100%" viewbox="0 0 100 100" id="innertimer-border"><circle cy="50" fill="transparent" cx="50" r="49" stroke-width="0.5" stroke="var(--softer-btn-border)"></circle></svg>
         </div>
     </div>
+    <div class="queueoverlay">
+        <div class="panel" id="createpanel">
+            <h1>Create a room</h1>
+            <div class="row" id="createroomrow" style="justify-content: center; margin-bottom: 50px">
+                <!-- <label for="createroom">Room name:</label> -->
+                <input type="text" id="createroom" name="createroom" pattern="[A-Z0-9]{5}" placeholder="🔄 creates a valid room code." readonly value="">
+                <p id="genroom" onclick="generateRandomRoomName()" style="cursor: pointer; font-size: 40px; margin: 0">🔁</p>
+            </div>
+            <input type="button" style="cursor: pointer" onclick="createRoom()" value="Create">
+        </div>
+        <div class="panel">
+            <h1>Join a room</h1>
+            <div class="row" style="margin-bottom: 50px">
+                <!-- <label for="joinroom">Room name:</label> -->
+                <input type="text" id="joinroom" name="joinroom" placeholder="Enter your 5-char room ID here." pattern="[A-Z0-9]{5}" value="">
+            </div>
+            <input type="button" style="cursor: pointer" onclick="joinRoom()" value="Join">
+        </div>
+    </div>
+    <div class="tutorialoverlay">
+        <h1 style="text-align: center; font-size: 32px">QueUp Help</h1>
+        <p>The QueUp system is designed to give Purdue ECE students and staff the ability to quickly create a queuing room, capable of handling multiple queues, and to be able to customize it to fit your class needs.</p>
+        <p>Quick start:</p>
+        <ul>
+            <li>Generate a room code by clicking the 🔁 button.  (Room codes can only be 5 alphanumeric characters.)</li>
+            <li>Click "Create".</li>
+            <li>To join a queue, click the "+" button for a specific queue.  To leave a queue, click the button with your username on it.</li>
+            <li>Share the room code with anyone who wishes to join the queue.  They must enter the code in the "Join a room" panel.</li>
+        </ul>
+        <p>Each room also has a description that you can customize to help users ensure they're in the right room. </p> 
+        <div class="center"><video autoplay loop src="description.webm"></video></div>
+        <p>You can rename the "default-queue" to whatever you wish (checkoff, help, aisle1, etc.), as well as add new queues with their own names as well.  Click the name of the queue to rename it, or click the "Add queue" button to add a new queue.</p>
+        <div class="center"><video autoplay loop src="queuename.webm"></video></div>
+        <p></p>
+        <div class="center"><video autoplay loop src="addqueue.webm"></video></div>
+        <p>If you create a room, you are automatically the "owner" for the room, which is what lets you set the room description and add/rename queues.  If you wish to give someone else the same privileges as you, click the ⚙️ icon, click "Add room owners", and type in a list of Purdue account usernames, separated by commas.</p>  
+        <div class="center"><video autoplay loop src="addowner.webm"></video></div>
+        <p>You can also remove owners (including yourself) by clicking the ⚙️ icon and clicking "Delete room owners", with the same input requirements.  Be sure to have at least one owner for the room - zero owners are not permitted as the room will be inaccessible.</p>
+        <p>Each room will remain open as long is there is some activity for 24 hours, after which it will be deleted.  You can also delete a room manually by clicking the ⚙️ icon and clicking "Close Room".</p>
+        <p>As a measure of protection, non-owners cannot edit the room description or add/rename queues.</p>
     <script>
-        window.userstation = parseInt("--userstation--");
-        window.is_staff = "--is-staff--" == "true" ? true : false;
-        function genQueue(q, text) {
-            var htmlarray = document.querySelector(`#${q}`);
-            var list = Array.from(document.querySelector(`#${q}`).children);
-            // make sure to sort by longest time created!
-            text[q].sort((a, b) => a[1] - b[1]);
-            var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => parseInt(e.querySelector(".station_text").innerHTML)), text[q].map(e => e[0]));
-            actions.forEach(a => {
-                // format of a: ['action', station, (position)]
-                switch(a[0]) {
-                    case "delete":
-                        selectElmByStation(a[1], q) ? selectElmByStation(a[1], q).remove() : null;
-                        break;
-                    case "add":
-                        if (a[1] == window.userstation)
-                            addSelf(q);
-                        else
-                            addToQueue(a[1], q);
-                        break;
-                    case "shift":
-                        htmlarray.insertBefore(selectElmByStation(a[1], q), list[a[2]]);
-                        break;
-                }
-            });
-            // if a TA overrides visibility and both the waiter-add/is-self buttons are removed
-            // then assume that student is no longer in queue and we can add waiter-add again
-            list = Array.from(document.querySelector(`#${q}`).children);
-            if (list.filter(e => e.classList.contains('waiter-add') || e.classList.contains('is-self')).length == 0) {
-                var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${q}')"><p class="station_text">+</p></div>`;
-                var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
-                document.querySelector(`#${q}`).appendChild(added);
+        window.username = "--username--";
+        window.is_owner = false;  // not a risk if changed manually (maliciously) client-side.
+                                  // all authz requests are checked against room owners.
+        async function closeRoom() {
+            if (document.querySelectorAll(".is-self").length > 0) {
+                alert("You are still in the room.  Please remove yourself from any queues before leaving.");
+                return;
             }
-            text[q].filter(sd => sd[2]).forEach(sd => {
-                var elm = selectElmByStation(sd[0], q);
-                elm.innerHTML = '<span class="icon"></span>' + elm.innerHTML;
-            })
-            // now sync up time
-            applyTime(q, text);
+            try {
+                if (!window.is_owner) {
+                    alert("You are not authorized to close this room.  Unauthorized requests will be logged.");
+                    return;
+                }
+                var response = await fetch('roomd.py?setup=true&action=del&room=' + roomname);
+                if (response.status != 200) {
+                    alert("An error occurred while deleting the room.  Closing out anyway...");
+                    returnToOverlay();
+                }
+            }
+            catch(err) {
+                alert("An error occurred on first fetch: " + err.toString());
+                console.error(err);
+            }
         }
-        function applyTime(q, queues) {
-            var list = Array.from(document.querySelector("#" + q).children);
-            queues[q].forEach(a => {
-                var elm = list.filter(e => parseInt(e.querySelector(".station_text").innerHTML) == a[0])[0];
+        function returnToOverlay() {
+            if (document.querySelectorAll(".is-self").length > 0) {
+                alert("You are still in the room.  Please remove yourself from any queues before leaving.");
+                return;
+            }
+            window.evtSource?.close();
+            // remove rooms
+            Array.from(document.querySelectorAll(".roomtop:not(#queueadddiv)")).forEach(e => e.remove());
+            document.getElementById("gear").classList.toggle("opened", false);
+            document.querySelector(".collapsible").classList.toggle("opened", false);
+            document.getElementById("collapse").classList.toggle("collapsible-in-overlay", true);
+            document.getElementById("navside2").classList.toggle("small-screen", false);
+            document.getElementsByClassName("queueoverlay")[0].style.display = "flex";
+        }
+        function generateRandomRoomName() {
+            var roomname = "";
+            var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            // do not accept roomname if a character in it occurs more than two times
+            while (roomname == "") {
+                for (var i = 0; i < 5; i++) {
+                    roomname += chars.charAt(Math.floor(Math.random() * chars.length));
+                }
+                // more than 3 identical chars? try again
+                if (roomname.match(/(.)\1{2,}/))
+                    roomname = "";
+                // must be not all letters and not all numbers
+                else if (roomname.match(/^[A-Z]+$/) || roomname.match(/^[0-9]+$/))
+                    roomname = "";
+            }
+            document.getElementById("createroom").value = roomname;
+        }
+        async function createQueue() {
+            var queue = null;
+            while (queue == null || !(/[a-zA-Z0-9]{3,15}/.test(queue))) {
+                var queue = prompt("Enter a valid name for the queue.");
+                if ((queue == "") || (queue == null))
+                    return;
+            }
+            try {
+                var response = await fetch('roomd.py?setup=true&action=add&room=' + roomname + '&queue=' + queue);
+                if (response.status != 200) {
+                    t = await response.text();
+                    alert("An error occurred while creating the queue.  Error: " + t);
+                    return;
+                }
+            }
+            catch(err) {
+                alert("An error occurred on first fetch: " + err.toString());
+                console.error(err);
+            }
+        }
+        async function createRoom() {
+            var roomname = document.getElementById("createroom").value;
+            if (roomname.length != 5 || !roomname.match(/[A-Z0-9]{5}/)) {
+                alert("Room name must be 5 characters long.");
+                return;
+            }
+            try {
+                var response = await fetch('roomd.py?setup=true&action=add&room=' + roomname);
+                console.log(response);
+                if (response.status != 200) {
+                    alert("An error occurred while creating the room. Error: " + await response.text());
+                    return;
+                }
+                setupRoom(response, roomname);
+            }
+            catch(err) {
+                alert("An error occurred on first data fetch: " + err.toString());
+                console.error(err);
+            }
+        }
+        async function joinRoom() {
+            document.getElementById("joinroom").value = document.getElementById("joinroom").value.toUpperCase();
+            var roomname = document.getElementById("joinroom").value;
+            if (roomname.length != 5 || !roomname.match(/[A-Z0-9]{5}/)) {
+                alert("Room name must be 5 characters long and contain alphanumeric characters.");
+                return;
+            }
+            try {
+                var response = await fetch('roomd.py?setup=true&action=chk&room=' + roomname);
+                if (response.status != 200) {
+                    alert("An error occurred while joining the room.  Please double check the room code.");
+                    return;
+                }
+                setupRoom(response, roomname);
+            }
+            catch(err) {
+                alert("An error occurred on first fetch: " + err.toString());
+                console.error(err);
+            }
+        }
+        async function setupRoom(response, roomname) {
+            document.getElementById("collapse").classList.toggle("collapsible-in-overlay", false);
+            document.getElementById("navside2").classList.toggle("small-screen", true);
+            j = await response.text();
+            try {
+                json = JSON.parse(j);
+            }
+            catch(err) {
+                alert("An error occurred while parsing the response from the server.  Response was: \n" + j);
+                return;
+            }
+            window.is_owner = json["is-owner"];
+            var roomsubtitle = json["subtitle"] === null ? "" : json["subtitle"];
+            console.log(json);
+            if (!window.is_owner) {
+                document.getElementById("closeroom").style.display = "none";
+                document.getElementById("queueadddiv").style.display = "none";
+            }
+            document.getElementById("closeroom").classList.toggle("hide-if-not-owner", !window.is_owner);
+            document.getElementById("addroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
+            document.getElementById("delroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
+            addRoom(roomname, roomsubtitle);
+            genRoom(roomname, JSON.parse(j));
+            window.roomname = roomname;
+            createEventSource();
+        }
+        function createEventSource() {
+            if (typeof(EventSource) !== "undefined") {
+                window.evtSource = new EventSource("roomd.py?sseupdate=true&room=" + window.roomname);
+                window.evtSource.onopen = function() {
+                    document.getElementsByClassName("queueoverlay")[0].style.display = "none";
+                };
+                window.evtSource.onmessage = function(event) {
+                    var json = JSON.parse(event.data);
+                    // an empty response means the room was deleted. 
+                    // close the event source and return to the overlay.
+                    if (Object.keys(json).length == 0) {
+                        returnToOverlay();
+                        return;
+                    }
+                    else {
+                        genRoom(window.roomname, json);
+                    }
+                    window.disableOperations = false;
+                };
+                window.evtSource.onerror = () => {
+                    if (!window.disableErrors) {
+                        window.evtSource.close();
+                        alert("An error has occurred awaiting updates from the server.  Please refresh the page.");
+                    }
+                }
+            }
+            else {
+                alert("This browser does not support Server-Sent Events, which is required to handle room functionality.  Use a more modern browser like Firefox or Chrome.");
+            }
+        }
+        function genRoom(r, json) {
+            // json format - { 'room': { 'queue': [username, time] } }
+            // so we extract queues by just taking the first key and keying into "json" to get the queues.
+            // make sure to sort by longest time created!
+            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner"].includes(e))[0]];
+            // delete queues that don't exist in the JSON
+            Array.from(document.querySelectorAll(".queue"))
+            .filter(_q => _q.id != "queueadd")                      // must be a real queue - do not remove "Add Queue"!
+            .map(_q => _q.getAttribute("queue"))                    // get the queue names
+            .filter(_q => _q && !Object.keys(queues).includes(_q)).forEach(_q => {     // queues that are not in the JSON...
+                document.querySelector(`#queue${_q}`).remove();     // ...must be removed.
+            });
+            Object.keys(queues).forEach(_q => {
+                if (document.querySelector(`#queue${_q}`) == null) {
+                    addQueue(_q);
+                }
+                var htmlarray = document.querySelector(`#queue${_q}`);
+                var list = Array.from(document.querySelector(`#queue${_q}`).children);
+                q = queues[_q];
+                q.sort((a, b) => a[1] - b[1]);
+                // look at what's already in the queue DOMs and compare it to what's in the JSON
+                // then generate a optimized list of actions to perform.
+                // increases performance and reduces DOM thrashing.
+                var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => e.querySelector(".username_text").innerHTML.split(" ")[0]), q.map(e => e[0]));
+                actions.forEach(a => {
+                    // format of a: ['action', username, (position)]
+                    switch(a[0]) {
+                        case "delete":
+                            selectElmByUsername(a[1], _q) ? selectElmByUsername(a[1], _q).remove() : null;
+                            break;
+                        case "add":
+                            var user = a[1];
+                            var data = q.filter(e => e[0] == user)[0][2];
+                            if (a[1] == window.username) {
+                                window.userdata = data;
+                                addSelf(_q);
+                            }
+                            else {
+                                addToQueue(a[1], _q);
+                                if (data != "") {
+                                    // take the third element of the array (userdata) and apply it to the queue
+                                    var elm = Array.from(document.querySelector(`#queue${_q}`).children).filter(e => e.querySelector(".username_text").innerHTML == user)[0];
+                                    elm.querySelector(".username_text").innerHTML += ` (${data})`;
+                                }
+                            }
+                            break;
+                        case "shift":
+                            htmlarray.insertBefore(selectElmByUsername(a[1], _q), list[a[2]]);
+                            break;
+                    }
+                });
+                // if a TA overrides visibility and both the waiter-add/is-self buttons are removed
+                // and if window.username is not in the queue, then assume that student is no longer 
+                // in room and we can add waiter-add again
+                var list = Array.from(document.querySelector(`#queue${_q}`).children);
+                if (list.filter(e => e.classList.contains('waiter-add') || e.classList.contains('is-self')).length == 0) {
+                    var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${_q}')"><p class="username_text">+</p></div>`;
+                    var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
+                    document.querySelector(`#queue${_q}`).appendChild(added);
+                }
+                // now sync up time
+                applyTimeData(_q, q);
+            })
+        }
+        function applyTimeData(q, roomdata) {
+            var list = Array.from(document.querySelector(`#queue${q}`).children);
+            roomdata.forEach(a => {
+                var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
                 var now = Date.now();
-                var then = new Date(parseFloat(a[1]));
-                var minute = parseInt((now - (then*1000)) / (60 * 1000));
+                var then = new Date(parseFloat(a[1])*1000);
+                var minute = parseInt((now - then) / (60 * 1000));
                 var max = 5;
                 var maxopacity = 0.7;
                 elm.style["background-color"] = `var(--waiter-bg-${minute <= max ? minute : max})`;
@@ -109,45 +335,21 @@
         }
         window.onload = async () => {
             clock();
-            var response = await fetch('queue.py?firsttime=true', { headers: { 'Content-Type': 'application/json' } });
-            if (response.status == 200) {
-                var text = await response.json();
-                if ('status' in text && text['status'] == 'failure') {
-                    alert("Error loading page: " + text['reason']);
-                    return;
-                }
-                console.log("onload", text);
-                var queues = Object.keys(text);
-                queues.sort((a,b) => a.localeCompare(b));
-                queues.forEach(q => {
-                    addQueue(q);
-                    genQueue(q, text);
-                });
-                if (typeof(EventSource) !== "undefined") {
-                    window.evtSource = new EventSource("queue.py?sseupdate=true");
-                    window.evtSource.onopen = function() {
-                        document.body.style.opacity = '1';
-                    };
-                    window.evtSource.onmessage = function(event) {
-                        var json = JSON.parse(event.data);
-                        console.log("response: ", json);
-                        Object.keys(json).forEach(q => genQueue(q, json));
-                        window.disableOperations = false;
-                    };
-                    window.evtSource.onerror = () => {
-                        if (!window.disableErrors) {
-                            window.evtSource.close();
-                            alert("An error has occurred awaiting updates from the server.  Please refresh the page.");
-                        }
-                    }
-                } 
-                else {
-                    alert("This browser does not support Server-Sent Events, which is required to handle queue functionality.  Use a more modern browser like Firefox or Chrome.");
-                }
+            // initialize if not set
+            if (!localStorage.darkmode) {
+                localStorage.darkmode = "false";
+            }
+            if (localStorage.darkmode == "true") {
+                document.documentElement.setAttribute("theme", "dark");
             }
             else {
-                alert("An error occurred trying to get queue data on page load.  Refresh the page.");
+                document.documentElement.setAttribute("theme", "light");
             }
+            document.addEventListener('click', (e) => {
+                if (e.target.id != "gear" && document.querySelector("#gear").classList.contains("opened")) {
+                    document.querySelector("#gear").click();
+                }
+            }, true);
         }
         function syncArr(_old, _new) {
             var actions = [];
@@ -168,29 +370,9 @@
             })
             return actions;
         }
-        function selectElmByStation(station, queue) {
-            var list = Array.from(document.querySelector("#" + queue).children).filter(e => parseInt(e.querySelector(".station_text").innerHTML) == station);
+        function selectElmByUsername(username, queue) {
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == username);
             return list.length > 0 ? list[0] : null;
-        }
-        async function watchForChanges() {
-            try {
-                var response = await fetch('queue.py?update=true', { headers: { 'Content-Type': 'application/json' } });
-                if (response.status == 200 || response.status == 408) {
-                    var text = await response.json();
-                    console.log("response: ", text);
-                    Object.keys(text).forEach(q => genQueue(q, text));
-                    window.disableOperations = false;
-                    await watchForChanges();
-                }
-                else {
-                    alert("Error in response: check console for logs.")
-                    console.log(response.status);
-                    console.log(response);
-                }
-            }
-            catch(err) {
-                console.log(err)
-            }
         }
         function clock() {
             function IntTwoChars(i) {
@@ -200,162 +382,60 @@
             document.querySelector("#time").innerHTML = `${IntTwoChars(time.getHours())}:${IntTwoChars(time.getMinutes())}`;
             setTimeout(clock, 1000);
         }
-        function toggleTheme() {
-            var mode = document.documentElement.getAttribute("theme") || "";
-            if (mode == "light") {
-                document.documentElement.setAttribute("theme", "dark");
-            } else {
-                document.documentElement.setAttribute("theme", "light");
-            }
-        }
-        function toggleUtil() {
-            var mode = document.documentElement.getAttribute("util") || "";
-            if (mode == "timer") {
-                document.documentElement.setAttribute("util", "queues");
-            } else {
-                document.documentElement.setAttribute("util", "timer");
-            }
-        }
-        function recurseTimer() {
-            var now = Date.now();
-            if (window.timerStopped) return;
-            if (window.timerRunning == false) {
-                window.lastSavedTimestamp = now;
-                return;
-            }
-            // if timer is starting up
-            if (window.timerStart === undefined)
-                window.timerStart = now;
-            if (window.lastSavedTimestamp !== undefined) {
-                window.timerStart += (now - window.lastSavedTimestamp);
-                delete window.lastSavedTimestamp;
-            }
-            else if (window.lastTimestamp === undefined)
-                window.lastTimestamp = now;
-            var elapsed = now - window.lastTimestamp;
-            // if timer is done
-            if ((now - window.timerStart) > window.timerLength) {
-                changeTimer(0);
-                setTimeout(() => {
-                    resetTimer();
-                }, 1000);
-                return;
-            }
-            // otherwise wait (1 second - diff in time from start) to self-correct time
-            else {
-                now = Date.now()
-                var curSecond = parseInt((now - window.timerStart) / 1000);
-                var nextSecond = curSecond + 1;
-                changeTimer(window.timerLength - (curSecond * 1000))
-                window.lastTimestamp = now;
-                setTimeout(recurseTimer, (nextSecond * 1000) - (now - window.timerStart));
-                // setTimeout(recurseTimer, 1000);
-            }
-        }
-        // thanks to Matt for saving my time
-        // https://stackoverflow.com/questions/21294302/converting-milliseconds-to-minutes-and-seconds-with-javascript
-        function msToTime(time) {
-            var d = new Date (1000 * Math.round (time/1000));
-            function pad(i) { return ('0'+i).slice(-2); }
-            return d.getUTCHours() + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
-        }
-        function changeTimer(time) {
-            document.querySelector("#timertext").innerHTML = msToTime(time);
-        }
-        window.timerLength = 80 * 60 * 1000;
-        function toggleTimer(event) {
-            var border = event.currentTarget.parentNode.parentNode.querySelector('#innertimer-border');
-            if (event.currentTarget.innerHTML == "▶") {
-                border.classList.add('innertimer-border-active');
-                event.currentTarget.innerHTML = "⏸";
-                window.timerRunning = true;
-                window.timerStopped = false;
-                recurseTimer();
-            }
-            else if (event.currentTarget.innerHTML == "⏸") {
-                border.classList.remove('innertimer-border-active');
-                window.timerRunning = false;
-                event.currentTarget.innerHTML = "▶";
-            }
-        }
-        function resetTimer() {
-            var border = document.querySelector('#innertimer-border');
-            border.classList.remove('innertimer-border-active');
-            window.timerStopped = true;
-            window.timerRunning = false;
-            document.querySelector('#stopstart').innerHTML = "▶";
-            document.querySelector("#timertext").innerHTML = msToTime(window.timerLength);
-            delete window.timerStart;
-            delete window.lastSavedTimestamp;
-            delete window.lastTimestamp;
-        }
-        function checkTime(event) {
-            if (event.key == "Enter" || event.type == "blur") {
-                event.currentTarget.innerHTML = event.currentTarget.innerHTML.replace(" ", "");
-                if (event.currentTarget.innerHTML.match(/^(?:([0-9]+):)?(?:([0-9]+):)?([0-9]+)$/)) {
-                    var hms = event.currentTarget.innerHTML.match(/^(?:([0-9]+):)(?:([0-9]+):)([0-9]+)$/);
-                    var ms = event.currentTarget.innerHTML.match(/^(?:([0-9]+):)([0-9]+)$/);
-                    var s = event.currentTarget.innerHTML.match(/^([0-9]+)$/);
-                    if (hms) {
-                        var hrs = hms[1]; var min = hms[2]; var sec = hms[3];
-                        window.timerLength = (hrs * 60 * 60 * 1000) + (min * 60 * 1000) + (sec * 1000);
-                    }
-                    else if (ms) {
-                        var min = ms[1]; var sec = ms[2];
-                        window.timerLength = (min * 60 * 1000) + (sec * 1000);
-                    }
-                    else if (s) {
-                        var sec = s[1];
-                        window.timerLength = sec * 1000;
-                    }
-                }
-                else {
-                    event.currentTarget.innerHTML = "1:20:00";
-                    window.timerLength = 80 * 60 * 1000;
-                }
-                resetTimer();
-                event.currentTarget.blur();
-            }
-        }
         function addSelf(queue) {
-            var list = Array.from(document.querySelector(`#${queue}`).children).filter(e => e.classList.contains('waiter-add'));
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter-add'));
             if (list.length > 0) {
                 list[0].remove();
             }
+            var wd = window.userdata != "" ? " (" + window.userdata + ")" : "";
             var html = `<div class="waiter is-self" onclick="addBtnHandler(event, '${queue}')">
-                            <p class="station_text">${window.userstation}</p>
+                            <p class="username_text">${window.username}${wd}</p>
                             <p class="time_text">&lt;1 min</p>
                         </div>`;
             var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
-            document.querySelector(`#${queue}`).appendChild(added);
+            document.querySelector(`#queue${queue}`).appendChild(added);
         }
         function delSelf(queue) {
-            var list = Array.from(document.querySelector(`#${queue}`).children).filter(e => e.classList.contains('is-self'));
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('is-self'));
             if (list.length > 0) {
                 list[0].remove();
             }
             var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')">
-                            <p class="station_text">+</p>
+                            <p class="username_text">+</p>
                         </div>`;
             var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
-            document.querySelector(`#${queue}`).appendChild(added);
+            document.querySelector(`#queue${queue}`).appendChild(added);
         }
-        function delFromQueueTA(station, queue) {
-            fetch(`queue.py/?action=del&queue=${queue}&station=${station}`);
-            var list = Array.from(document.querySelector(`#${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('.station_text').innerHTML == station);
+        function delFromRoomTA(username, queue) {
+            fetch(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('.username_text').innerHTML == username);
             if (list.length > 0) {
                 list[0].remove();
             }
         }
-        function performOp(action, queue, station=null) {
+        function performOp(action, queue, username=null) {
             try {
-                if (window.is_staff && station != null) {
+                if (window.is_owner && username != null) {
                     if (action == "del")
-                        delFromQueueTA(station, queue);
+                        delFromRoomTA(username, queue);
                 }
                 else {
-                    fetch(`queue.py/?action=${action}&queue=${queue}`);
-                    var qlist = document.querySelector(`#${queue}`).children;
+                    if (action == "add") {
+                        var userdata = null;
+                        while ((userdata == null) && !/^[0-9]+$/.test(userdata)) {
+                            var userdata = prompt("Enter a station number, if applicable.  Enter nothing if not.  Press Escape/Cancel to close.");
+                            if (userdata == null) {
+                                window.disableOperations = false;
+                                return;
+                            }
+                        }
+                        window.userdata = userdata;
+                        fetch(`roomd.py/?action=add&room=${window.roomname}&queue=${queue}&userdata=${userdata}`);
+                    }
+                    else {
+                        fetch(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}`);
+                    }
+                    var qlist = document.querySelector(`#queue${queue}`).children;
                     var added = qlist[qlist.length - 1];
                     if (action == "add") {
                         addSelf(queue);
@@ -366,22 +446,22 @@
                 }
             }
             catch(err) {
-                console.log(`Error occurred while performing ${action} on ${queue} queue.`);
+                console.log(`Error occurred while performing ${action} on room ${window.roomname}, queue ${queue}.`);
                 console.error(err);
             }
         }
-        function addToQueue(station, queue) {
-            var list = document.querySelector(`#${queue}`);
+        function addToQueue(username, queue) {
+            var list = document.querySelector(`#queue${queue}`);
             // do not add duplicates!
-            if (Array.from(list.children).map(e => parseInt(e.querySelector(".station_text").innerHTML)).includes(station)) {
+            if (Array.from(list.children).map(e => e.querySelector(".username_text").innerHTML).includes(username)) {
                 return;
             }
             var time = "&lt;1";
             var parser = new DOMParser();
-            if (window.is_staff)
-                var newhtml = parser.parseFromString(`<div class="waiter" style="cursor: pointer" onclick="addBtnHandler(event, '${queue}')"><p class="station_text">${station}</p><p class="time_text">${time} min</p></div>`, 'text/html');
+            if (window.is_owner)
+                var newhtml = parser.parseFromString(`<div class="waiter" style="cursor: pointer" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">${username}</p><p class="time_text">${time} min</p></div>`, 'text/html');
             else
-                var newhtml = parser.parseFromString(`<div class="waiter"><p class="station_text">${station}</p><p class="time_text">${time} min</p></div>`, 'text/html');
+                var newhtml = parser.parseFromString(`<div class="waiter"><p class="username_text">${username}</p><p class="time_text">${time} min</p></div>`, 'text/html');
             var elm = newhtml.body.children[0];
             // has our own entry already been added?  Then add the incoming entry at the end of the list.
             if (Array.from(list.children).filter(e => e.classList.contains("waiter-add")).length > 0)
@@ -396,28 +476,182 @@
                 // then we're adding a new one
                 performOp('add', queue);
             }
-            else if (window.is_staff && !event.currentTarget.classList.contains("is-self")) {
-                // we are a TA and removing someone else's station, not our own
-                performOp('del', queue, event.currentTarget.querySelector('.station_text').innerHTML);
+            else if (window.is_owner && !event.currentTarget.classList.contains("is-self")) {
+                // we are a TA and removing someone else's username, not our own
+                performOp('del', queue, event.currentTarget.querySelector('.username_text').innerHTML.split(" ")[0]);
             }
             else if (event.currentTarget.classList.contains("is-self")) {
                 // then we're removing an existing one
                 performOp('del', queue);
             }
         }
+        async function renameQueue(event) {
+            if (event.type != "blur")
+                return;
+            if (!window.is_owner)
+                return;
+            event.preventDefault();
+            var curTarget = event.currentTarget;
+            curTarget.innerHTML = curTarget.innerHTML.replace(" ", "");
+            curTarget.blur();
+            // name was not changed.
+            if (curTarget.innerHTML == curTarget.getAttribute("queue")) {
+                return;
+            }
+            if (!/[a-zA-Z0-9\_]{3,15}/.test(curTarget.innerHTML)) {
+                alert("Queue name must be alphanumeric with optional underscores, be more than 3 characters and less than 16 characters long.");
+                curTarget.innerHTML = curTarget.getAttribute("queue");
+                return;
+            }
+            var r = await fetch(`roomd.py/?setup=true&action=ren&room=${window.roomname}&queue=${curTarget.getAttribute("queue")}&newqueue=${curTarget.innerHTML}`);
+            if (r.status != 200) {
+                alert("An error occurred while renaming the queue.  Please try again.");
+                curTarget.innerHTML = curTarget.getAttribute("queue");
+                return;
+            }
+            else {
+                // response will add back the renamed queue
+                curTarget.remove();
+                document.querySelector(`#queue${curTarget.getAttribute("queue")}`).remove();
+            }
+        }
+        async function setRoomSubtitle(event) {
+            // triggers when focus is shifted away (by pressing Enter or clicking somewhere else)
+            if (!window.is_owner)
+                return;
+            event.preventDefault();
+            var curTarget = event.currentTarget;
+            curTarget.innerHTML = curTarget.innerHTML.replace(/<br>/g, "");
+            curTarget.innerHTML.trim();
+            curTarget.blur();
+            // name was not changed.
+            if (curTarget.innerHTML == curTarget.getAttribute("subtitle")) {
+                return;
+            }
+            // special handling for empty subtitles
+            else if ((curTarget.innerHTML == "") || (curTarget.innerHTML == "<br>") || (curTarget.innerHTML == "Add room information...")) {
+                curTarget.innerHTML = "Add room information...";
+                curTarget.setAttribute("subtitle", "");
+                var subtitle = "";
+            }
+            else {
+                if (!/[a-zA-Z0-9 \_\-]{1,130}/.test(curTarget.innerHTML)) {
+                    alert("Room subtitle can only contain the characters a-z, A-Z, 0-9, spaces, hyphens, and underscores, and must be less than 130 characters long.");
+                    curTarget.innerHTML = curTarget.getAttribute("subtitle");
+                    return;
+                }
+                var subtitle = curTarget.innerHTML;
+            }
+            var r = await fetch(`roomd.py/?setup=true&action=setsub&room=${window.roomname}&subtitle=${subtitle}`);
+            if (r.status != 200) {
+                alert("An error occurred while setting the room description.  Please try again.");
+                curTarget.innerHTML = curTarget.getAttribute("subtitle");
+            }
+            else {
+                curTarget.classList.toggle("textadded", curTarget.innerHTML != "Add room information...");
+                curTarget.setAttribute("subtitle", subtitle);
+            }
+        }
+        function addRoom(room, subtitle) {
+            // this application will not do multiple rooms.  remove all rooms first
+            var parser = new DOMParser();
+            if (subtitle == '' && !window.is_owner) {
+                var subtitle_p = '';
+            }
+            else if (subtitle == '') {
+                var subtitle_p = `<p class="roomsubtitle" contenteditable subtitle="">Add room information...</p>`;
+            }
+            else {
+                var style = window.is_owner ? "" : "style='cursor:default'";
+                var edit = window.is_owner ? "contenteditable" : "";
+                var subtitle_p = `<p class="roomsubtitle textadded" ${style} ${edit} subtitle=${subtitle}>${subtitle}</p>`;
+            }
+            var newhtml = parser.parseFromString(`
+            <div class="roomtop">
+                <p class="roomtitle">Room ${room}</p>
+                <div class="helpdiv row">${subtitle_p}</div>
+            </div>`, 'text/html');
+            var elm = newhtml.body.children[0];
+            document.querySelector(`#rooms`).insertBefore(elm, document.querySelector("#queueadddiv"));
+            if (window.is_owner) {
+                document.querySelector(".roomsubtitle").addEventListener('blur', setRoomSubtitle);
+                document.querySelector(".roomsubtitle").addEventListener('keydown', (event)=>{if(['Enter','Escape'].includes(event.key)){event.preventDefault();event.currentTarget.blur()}});
+            }
+        }
         function addQueue(queue) {
             var parser = new DOMParser();
             var newhtml = parser.parseFromString(`
-                <div class="queuetop">
-                    <p class="queuetitle">${queue}</p>
-                    <div id="${queue}" class="queue">
-                        <div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p class="station_text">+</p></div>
-                    </div>
-                </div>`, 'text/html');
-            var elm = newhtml.body.children[0];
-            document.querySelector(`#queues`).appendChild(elm);
+            <p class="queuetitle" ${window.is_owner ? "" : "style='cursor:default'"}" onblur="renameQueue(event)" onkeydown="if(['Enter','Escape'].includes(event.key)){event.preventDefault();event.currentTarget.blur()}" queue="${queue}" ${window.is_owner ? "contenteditable" : ""}>${queue}</p>
+            <div id="queue${queue}" class="queue">
+                <div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">+</p></div>
+            </div>`, 'text/html');
+            document.querySelector(".roomtop").appendChild(newhtml.body.children[0]);
+            // JS madness - appendChild REMOVES THE CHILD FROM NEWHTML!
+            document.querySelector(".roomtop").appendChild(newhtml.body.children[0]);
         }
+        // for later theme changes
+        function switchTheme() {
+            if (localStorage.darkmode == "true") {
+                localStorage.darkmode = "false";
+            }
+            else {
+                localStorage.darkmode = "true";
+            }
+            document.documentElement.setAttribute("theme", localStorage.darkmode == "true" ? "dark" : "light");
+        }
+        async function modRoomOwners(action='add') {
+            var owners = null;
+            while (owners == null) {
+                var owners = prompt("Enter a comma-separated list of usernames to " + (action == "add" ? "add as" : "delete from") + " room owners. (eg. user1, user2, user3)\n" + 
+                                    "You can also enter an empty string to get the current list of owners.");
+                if (owners == null) {
+                    return;
+                }
+                owners = owners.replace(/ /g, "");
+                // mistake typing usernames
+                try { owners = owners.split(","); }
+                catch(err) { owners = null; }
+                if (owners != "" && !/[a-zA-Z0-9\-/]{3,15}/.test(owners.join(","))) {
+                    alert("Usernames must be alphanumeric with optional hyphens, be more than 3 characters and less than 16 characters long.");
+                    owners = null;
+                }
+            }
+            try {
+                var _action = action == 'add' ? '' : 'del';
+                var response = await fetch(`roomd.py?setup=true&action=${_action}own&room=` + window.roomname + '&newusers=' + owners.join(","));
+                if (response.status != 200) {
+                    alert("An error occurred while modifying the owner list.  Error: " + await response.text());
+                    return;
+                }
+                else {
+                    var newowners = await response.text();
+                    newowners = newowners.replace(/"/g, "").replace(/'/g, "");
+                    if (owners == "") {
+                        alert("The current list of owners for this room is " + newowners + ".");
+                    }
+                    else {
+                        alert("Successfully modified owner list.  List of owners for this room is: " + newowners + ".");
+                    }
+                }
+            }
+            catch(err) {
+                alert("An error occurred while modifying owners: " + err.toString());
+                console.error(err);
+            }
+        }
+        // set up gear collapsible
+        var gear = document.getElementById("gear");
+        gear.addEventListener('click', function(event) {
+            event.currentTarget.classList.toggle("opened");
+            document.querySelector(".collapsible").classList.toggle("opened");
+        });
+        // set up help overlay
+        var help = document.getElementById("help");
+        help.addEventListener('click', function(event) {
+            event.currentTarget.classList.toggle("opened");
+            document.querySelector(".tutorialoverlay").classList.toggle("opened");
+        });
     </script>
 </body>
-<!-- Designed and deployed by Niraj Menon, 2022. -->
+<!-- Designed and deployed by Niraj Menon, 2023. -->
 </html>
