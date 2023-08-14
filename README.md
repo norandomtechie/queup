@@ -12,7 +12,7 @@ Each room also has a description that you can customize to help users ensure the
 You can rename the "default-queue" to whatever you wish (checkoff, help, aisle1, etc.), as well as add new queues with their own names as well.  Click the name of the queue to rename it, or click the "Add queue" button to add a new queue.  
 
 [queuename.webm](https://github.com/ece270/queup/assets/12859429/bc6d5a66-e9b0-41f7-b8fc-a52573f97c84)
-<br>
+
 [addqueue.webm](https://github.com/ece270/queup/assets/12859429/cd5ced67-b3cf-4680-b8ff-520642f65aca)
 
 If you create a room, you are automatically the "owner" for the room, which is what lets you set the room description and add/rename queues.  If you wish to give someone else the same privileges as you, click the ⚙️ icon, click "Add room owners", and type in a list of Purdue account usernames, separated by commas.  
