@@ -30,6 +30,7 @@
                     <button class="btn" id="closeroom" onclick="closeRoom()">Close room</button>
                     <button class="btn" id="addroomowners" onclick="modRoomOwners('add')">Add room owners</button>
                     <button class="btn" id="delroomowners" onclick="modRoomOwners('del')">Delete room owners</button>
+                    <button class="btn" id="toggleroomlock" onclick="toggleRoomLock('del')">Lock Room</button>
                 </div>
             </div>
         </div>
@@ -46,10 +47,10 @@
             <h1>Create a room</h1>
             <div class="row" id="createroomrow" style="justify-content: center; margin-bottom: 50px">
                 <!-- <label for="createroom">Room name:</label> -->
-                <input type="text" id="createroom" name="createroom" pattern="[A-Z0-9]{5}" placeholder="🔄 creates a valid room code." readonly value="">
+                <input type="text" id="createroom" name="createroom" pattern="[A-Z0-9]{5}" placeholder="🔄 creates a valid room code." value="">
                 <p id="genroom" onclick="generateRandomRoomName()" style="cursor: pointer; font-size: 40px; margin: 0">🔁</p>
             </div>
-            <input type="button" style="cursor: pointer" onclick="createRoom()" value="Create">
+            <input type="button" id="createroombtn" style="cursor: pointer" onclick="createRoom()" value="Create">
         </div>
         <div class="panel">
             <h1>Join a room</h1>
@@ -57,7 +58,7 @@
                 <!-- <label for="joinroom">Room name:</label> -->
                 <input type="text" id="joinroom" name="joinroom" placeholder="Enter your 5-char room ID here." pattern="[A-Z0-9]{5}" value="">
             </div>
-            <input type="button" style="cursor: pointer" onclick="joinRoom()" value="Join">
+            <input type="button" id="joinroombtn" style="cursor: pointer" onclick="joinRoom()" value="Join">
         </div>
     </div>
     <div class="tutorialoverlay">
@@ -85,17 +86,47 @@
         window.username = "--username--";
         window.is_owner = false;  // not a risk if changed manually (maliciously) client-side.
                                   // all authz requests are checked against room owners.
+        function fetchAndLimit(url) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    var resp = await fetch(url);
+                    if (resp.status == 412) {   // mod_python can't do 429 for some weird reason, so we'll use PRECONDITION_FAILED
+                        alert("You appear to be sending too many requests.  Please slow down.");
+                        reject("Too many requests");
+                    }
+                    if (resp.status == 423) {
+                        alert("This room is currently locked.  Ask the owner of the room (typically a TA or course staff) to unlock it.");
+                        reject("Room locked");
+                    }
+                    else if ((resp.status == 403) || (resp.status == 401)) {
+                        alert("You are not authorized to perform this action.  Unauthorized requests will be logged.");
+                        reject("Unauthorized");
+                    }
+                    else if (resp.status == 500) {
+                        alert("An error occurred on the server.  Please try again.");
+                        reject("Server error");
+                    }
+                    resolve(resp);
+                }
+                catch(err) {
+                    console.log("err", err);
+                    reject(err);
+                }
+            })
+        }
         async function closeRoom() {
             if (document.querySelectorAll(".is-self").length > 0) {
                 alert("You are still in the room.  Please remove yourself from any queues before leaving.");
                 return;
             }
+            var c = confirm("Are you sure you want to close the room?  This irreversibly removes all students (if any) and deletes the room itself.");
+            if (!c) return;
             try {
                 if (!window.is_owner) {
                     alert("You are not authorized to close this room.  Unauthorized requests will be logged.");
                     return;
                 }
-                var response = await fetch('roomd.py?setup=true&action=del&room=' + roomname);
+                var response = await fetchAndLimit('roomd.py?setup=true&action=del&room=' + roomname);
                 if (response.status != 200) {
                     alert("An error occurred while deleting the room.  Closing out anyway...");
                     returnToOverlay();
@@ -139,13 +170,13 @@
         }
         async function createQueue() {
             var queue = null;
-            while (queue == null || !(/[a-zA-Z0-9]{3,15}/.test(queue))) {
+            while (queue == null || !(/^[a-zA-Z0-9]{3,15}$/.test(queue))) {
                 var queue = prompt("Enter a valid name for the queue.");
                 if ((queue == "") || (queue == null))
                     return;
             }
             try {
-                var response = await fetch('roomd.py?setup=true&action=add&room=' + roomname + '&queue=' + queue);
+                var response = await fetchAndLimit('roomd.py?setup=true&action=add&room=' + roomname + '&queue=' + queue);
                 if (response.status != 200) {
                     t = await response.text();
                     alert("An error occurred while creating the queue.  Error: " + t);
@@ -164,7 +195,7 @@
                 return;
             }
             try {
-                var response = await fetch('roomd.py?setup=true&action=add&room=' + roomname);
+                var response = await fetchAndLimit('roomd.py?setup=true&action=add&room=' + roomname);
                 console.log(response);
                 if (response.status != 200) {
                     alert("An error occurred while creating the room. Error: " + await response.text());
@@ -185,7 +216,7 @@
                 return;
             }
             try {
-                var response = await fetch('roomd.py?setup=true&action=chk&room=' + roomname);
+                var response = await fetchAndLimit('roomd.py?setup=true&action=chk&room=' + roomname);
                 if (response.status != 200) {
                     alert("An error occurred while joining the room.  Please double check the room code.");
                     return;
@@ -209,15 +240,18 @@
                 return;
             }
             window.is_owner = json["is-owner"];
-            var roomsubtitle = json["subtitle"] === null ? "" : json["subtitle"];
+            var roomsubtitle = (json["subtitle"] === null) ? "" : json["subtitle"];
+            window.roomlocked = json["is-locked"];
             console.log(json);
-            if (!window.is_owner) {
-                document.getElementById("closeroom").style.display = "none";
-                document.getElementById("queueadddiv").style.display = "none";
-            }
+            document.getElementById("queueadddiv").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("closeroom").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("addroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("delroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
+            document.getElementById("toggleroomlock").classList.toggle("hide-if-not-owner", !window.is_owner);
+            if (window.roomlocked == true)
+                document.getElementById("toggleroomlock").innerHTML = "Unlock Room";
+            else
+                document.getElementById("toggleroomlock").innerHTML = "Lock Room";
             addRoom(roomname, roomsubtitle);
             genRoom(roomname, JSON.parse(j));
             window.roomname = roomname;
@@ -233,6 +267,7 @@
                     var json = JSON.parse(event.data);
                     // an empty response means the room was deleted. 
                     // close the event source and return to the overlay.
+                    console.log(json);
                     if (Object.keys(json).length == 0) {
                         returnToOverlay();
                         return;
@@ -240,6 +275,10 @@
                     else {
                         genRoom(window.roomname, json);
                     }
+                    // disableOperations is a hacky way to "rate limit" students from slamming the server
+                    // with operations.
+                    // this is INTENDED to be coupled with server responding with HTTP 429s to students 
+                    // who submit too many requests per second (cannot possibly be more than 3 requests per second).
                     window.disableOperations = false;
                 };
                 window.evtSource.onerror = () => {
@@ -261,9 +300,10 @@
             // delete queues that don't exist in the JSON
             Array.from(document.querySelectorAll(".queue"))
             .filter(_q => _q.id != "queueadd")                      // must be a real queue - do not remove "Add Queue"!
-            .map(_q => _q.getAttribute("queue"))                    // get the queue names
+            .map(_q => _q.id.slice(5))                    // get the queue names
             .filter(_q => _q && !Object.keys(queues).includes(_q)).forEach(_q => {     // queues that are not in the JSON...
-                document.querySelector(`#queue${_q}`).remove();     // ...must be removed.
+                document.querySelector(`#queue${_q}`).remove();     // ...must be removed. start with the queue
+                document.querySelector(`[queue=${_q}]`).parentNode.remove(); // and then the title div.
             });
             Object.keys(queues).forEach(_q => {
                 if (document.querySelector(`#queue${_q}`) == null) {
@@ -276,7 +316,7 @@
                 // look at what's already in the queue DOMs and compare it to what's in the JSON
                 // then generate a optimized list of actions to perform.
                 // increases performance and reduces DOM thrashing.
-                var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => e.querySelector(".username_text").innerHTML.split(" ")[0]), q.map(e => e[0]));
+                var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => e.querySelector(".username_text").innerHTML), q.map(e => e[0]));
                 actions.forEach(a => {
                     // format of a: ['action', username, (position)]
                     switch(a[0]) {
@@ -286,22 +326,38 @@
                         case "add":
                             var user = a[1];
                             var data = q.filter(e => e[0] == user)[0][2];
+                            var marked = q.filter(e => e[0] == user)[0][3] == "1" ? true : false;
                             if (a[1] == window.username) {
                                 window.userdata = data;
+                                window.usermarked = marked;
                                 addSelf(_q);
                             }
                             else {
-                                addToQueue(a[1], _q);
-                                if (data != "") {
-                                    // take the third element of the array (userdata) and apply it to the queue
-                                    var elm = Array.from(document.querySelector(`#queue${_q}`).children).filter(e => e.querySelector(".username_text").innerHTML == user)[0];
-                                    elm.querySelector(".username_text").innerHTML += ` (${data})`;
-                                }
+                                addToQueue(a[1], data, marked, _q);
                             }
                             break;
                         case "shift":
+                            console.log(selectElmByUsername(a[1], _q), list[a[2]]);
                             htmlarray.insertBefore(selectElmByUsername(a[1], _q), list[a[2]]);
                             break;
+                    }
+                });
+                // check if marked has changed for existing users
+                q.forEach(e => {
+                    var elm = selectElmByUsername(e[0], _q);
+                    if (elm != null) {
+                        if (e[3] == "1") {
+                            elm.classList.add("flashing");
+                            // first button will be marked.
+                            if (elm.querySelector(".waiterbtn"))
+                                elm.querySelector(".waiterbtn").innerHTML = "Unmark";
+                        }
+                        else {
+                            elm.classList.remove("flashing");
+                            // first button will be unmarked.
+                            if (elm.querySelector(".waiterbtn"))
+                                elm.querySelector(".waiterbtn").innerHTML = "Mark";
+                        }
                     }
                 });
                 // if a TA overrides visibility and both the waiter-add/is-self buttons are removed
@@ -387,9 +443,9 @@
             if (list.length > 0) {
                 list[0].remove();
             }
-            var wd = window.userdata != "" ? " (" + window.userdata + ")" : "";
-            var html = `<div class="waiter is-self" onclick="addBtnHandler(event, '${queue}')">
-                            <p class="username_text">${window.username}${wd}</p>
+            var html = `<div class="waiter is-self ${window.usermarked ? "flashing" : ""}" onclick="addBtnHandler(event, '${queue}')">
+                            <p class="username_text">${window.username}</p>
+                            <p class="data_text">${window.userdata}</p>
                             <p class="time_text">&lt;1 min</p>
                         </div>`;
             var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
@@ -400,14 +456,10 @@
             if (list.length > 0) {
                 list[0].remove();
             }
-            var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')">
-                            <p class="username_text">+</p>
-                        </div>`;
-            var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
-            document.querySelector(`#queue${queue}`).appendChild(added);
+            // response will bring back the add button automatically
         }
         function delFromRoomTA(username, queue) {
-            fetch(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
+            fetchAndLimit(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
             var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('.username_text').innerHTML == username);
             if (list.length > 0) {
                 list[0].remove();
@@ -422,18 +474,24 @@
                 else {
                     if (action == "add") {
                         var userdata = null;
-                        while ((userdata == null) && !/^[0-9]+$/.test(userdata)) {
-                            var userdata = prompt("Enter a station number, if applicable.  Enter nothing if not.  Press Escape/Cancel to close.");
+                        while ((userdata == null) || !/^[a-zA-Z0-9 \_\'\(\)]{1,50}$/.test(userdata)) {
+                            var userdata = prompt("Enter text that would allow a TA to identify you in-person or online (eg. station number or Zoom name).  Press Escape/Cancel to close.", window.userdata);
                             if (userdata == null) {
                                 window.disableOperations = false;
                                 return;
                             }
                         }
                         window.userdata = userdata;
-                        fetch(`roomd.py/?action=add&room=${window.roomname}&queue=${queue}&userdata=${userdata}`);
+                        fetchAndLimit(`roomd.py/?action=add&room=${window.roomname}&queue=${queue}&waitdata=${userdata}`)
+                        .catch(err => {
+                            window.disableOperations = false;
+                            if (err.includes("Room locked")) {
+                                delSelf(queue);
+                            }
+                        })
                     }
                     else {
-                        fetch(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}`);
+                        fetchAndLimit(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}`);
                     }
                     var qlist = document.querySelector(`#queue${queue}`).children;
                     var added = qlist[qlist.length - 1];
@@ -450,19 +508,22 @@
                 console.error(err);
             }
         }
-        function addToQueue(username, queue) {
+        function addToQueue(username, data, marked, queue) {
             var list = document.querySelector(`#queue${queue}`);
             // do not add duplicates!
             if (Array.from(list.children).map(e => e.querySelector(".username_text").innerHTML).includes(username)) {
                 return;
             }
+            var owner_buttons = window.is_owner ? `<div class="owner-buttons">
+                <button class="btn waiterbtn" onclick='markOrDelUser(event, "mark")'>Mark</button>
+                <button class="btn waiterbtn" onclick='markOrDelUser(event, "del")'>Delete</button>
+            </div>` : "";
             var time = "&lt;1";
             var parser = new DOMParser();
-            if (window.is_owner)
-                var newhtml = parser.parseFromString(`<div class="waiter" style="cursor: pointer" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">${username}</p><p class="time_text">${time} min</p></div>`, 'text/html');
-            else
-                var newhtml = parser.parseFromString(`<div class="waiter"><p class="username_text">${username}</p><p class="time_text">${time} min</p></div>`, 'text/html');
+            var user_data = `<p class="data_text">${data}</p>`;
+            var newhtml = parser.parseFromString(`<div class="waiter ${marked ? "flashing" : ""}"><p class="username_text">${username}</p>${user_data}<p class="time_text">${time} min</p>${owner_buttons}</div>`, 'text/html');
             var elm = newhtml.body.children[0];
+            console.log("addtoqueue", elm, list.children);
             // has our own entry already been added?  Then add the incoming entry at the end of the list.
             if (Array.from(list.children).filter(e => e.classList.contains("waiter-add")).length > 0)
                 list.insertBefore(elm, list.children[list.children.length - 1]);
@@ -498,12 +559,12 @@
             if (curTarget.innerHTML == curTarget.getAttribute("queue")) {
                 return;
             }
-            if (!/[a-zA-Z0-9\_]{3,15}/.test(curTarget.innerHTML)) {
+            if (!/^[a-zA-Z0-9\_]{3,15}$/.test(curTarget.innerHTML)) {
                 alert("Queue name must be alphanumeric with optional underscores, be more than 3 characters and less than 16 characters long.");
                 curTarget.innerHTML = curTarget.getAttribute("queue");
                 return;
             }
-            var r = await fetch(`roomd.py/?setup=true&action=ren&room=${window.roomname}&queue=${curTarget.getAttribute("queue")}&newqueue=${curTarget.innerHTML}`);
+            var r = await fetchAndLimit(`roomd.py/?setup=true&action=ren&room=${window.roomname}&queue=${curTarget.getAttribute("queue")}&newqueue=${curTarget.innerHTML}`);
             if (r.status != 200) {
                 alert("An error occurred while renaming the queue.  Please try again.");
                 curTarget.innerHTML = curTarget.getAttribute("queue");
@@ -511,8 +572,8 @@
             }
             else {
                 // response will add back the renamed queue
-                curTarget.remove();
-                document.querySelector(`#queue${curTarget.getAttribute("queue")}`).remove();
+                curTarget.parentNode.remove();
+                // document.querySelector(`#queue${curTarget.getAttribute("queue")}`).remove();
             }
         }
         async function setRoomSubtitle(event) {
@@ -535,14 +596,14 @@
                 var subtitle = "";
             }
             else {
-                if (!/[a-zA-Z0-9 \_\-]{1,130}/.test(curTarget.innerHTML)) {
+                if (!/^[a-zA-Z0-9 \_\-]{1,130}$/.test(curTarget.innerHTML)) {
                     alert("Room subtitle can only contain the characters a-z, A-Z, 0-9, spaces, hyphens, and underscores, and must be less than 130 characters long.");
                     curTarget.innerHTML = curTarget.getAttribute("subtitle");
                     return;
                 }
                 var subtitle = curTarget.innerHTML;
             }
-            var r = await fetch(`roomd.py/?setup=true&action=setsub&room=${window.roomname}&subtitle=${subtitle}`);
+            var r = await fetchAndLimit(`roomd.py/?setup=true&action=setsub&room=${window.roomname}&subtitle=${subtitle}`);
             if (r.status != 200) {
                 alert("An error occurred while setting the room description.  Please try again.");
                 curTarget.innerHTML = curTarget.getAttribute("subtitle");
@@ -578,13 +639,36 @@
                 document.querySelector(".roomsubtitle").addEventListener('keydown', (event)=>{if(['Enter','Escape'].includes(event.key)){event.preventDefault();event.currentTarget.blur()}});
             }
         }
+        function clearQueue(queue) {
+            if (!window.is_owner) {
+                alert("You are not authorized to clear this queue.  Unauthorized requests will be logged.");
+                return;
+            }
+            fetchAndLimit(`roomd.py/?setup=true&action=clear&room=${window.roomname}&queue=${queue}`);
+        }
+        function markOrDelUser(event, action='mark') {
+            if (!window.is_owner) {
+                alert("You are not authorized to perform this action.  Unauthorized requests will be logged.");
+                return;
+            }
+            var queue = event.currentTarget.parentNode.parentNode.parentNode.id.slice(5);
+            var username = event.currentTarget.parentNode.parentNode.querySelector(".username_text").innerHTML;
+            if (action == 'mark') {
+                // send a "mark" signal for this user.  if already marked, will be unmarked.
+                fetchAndLimit(`roomd.py/?setup=true&action=mark&room=${window.roomname}&queue=${queue}&username=${username}`);
+            }
+            else {
+                // delete user from queue. 
+                performOp('del', queue, username);
+            }
+        }
         function addQueue(queue) {
             var parser = new DOMParser();
-            var newhtml = parser.parseFromString(`
+            var newhtml = parser.parseFromString(`<div style="width: 100%; display: flex; flex-direction: row; justify-content: space-between; align-items: center">
             <p class="queuetitle" ${window.is_owner ? "" : "style='cursor:default'"}" onblur="renameQueue(event)" onkeydown="if(['Enter','Escape'].includes(event.key)){event.preventDefault();event.currentTarget.blur()}" queue="${queue}" ${window.is_owner ? "contenteditable" : ""}>${queue}</p>
-            <div id="queue${queue}" class="queue">
-                <div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">+</p></div>
-            </div>`, 'text/html');
+            ${window.is_owner ? ('<button class="btn clearbtn" style="display: flex;" onclick=\'clearQueue("' + queue + '")\'>Clear</button>') : ""}
+            </div>
+            <div id="queue${queue}" class="queue"></div>`, 'text/html');
             document.querySelector(".roomtop").appendChild(newhtml.body.children[0]);
             // JS madness - appendChild REMOVES THE CHILD FROM NEWHTML!
             document.querySelector(".roomtop").appendChild(newhtml.body.children[0]);
@@ -599,6 +683,27 @@
             }
             document.documentElement.setAttribute("theme", localStorage.darkmode == "true" ? "dark" : "light");
         }
+        async function toggleRoomLock() {
+            try {
+                var action = document.getElementById("toggleroomlock").innerHTML == "Lock Room" ? "lock" : "unlock";
+                var response = await fetchAndLimit(`roomd.py?setup=true&action=${action}&room=` + window.roomname);
+                if (response.status != 200) {
+                    alert("An error occurred while toggling the room lock.  Error: " + await response.text());
+                    return;
+                }
+                else {
+                    var locked = action == "lock";
+                    window.roomlocked = locked;
+                    alert("Successfully toggled room lock.  Room is now " + (locked ? "locked" : "unlocked") + ".  " +
+                          "Users can " + (locked ? "no longer" : "now") + " add themselves to queues.");
+                }
+                document.getElementById("toggleroomlock").innerHTML = locked ? "Unlock Room" : "Lock Room";
+            }
+            catch(err) {
+                alert("An error occurred while toggling the room lock: " + err.toString());
+                console.error(err);
+            }
+        }
         async function modRoomOwners(action='add') {
             var owners = null;
             while (owners == null) {
@@ -611,14 +716,14 @@
                 // mistake typing usernames
                 try { owners = owners.split(","); }
                 catch(err) { owners = null; }
-                if (owners != "" && !/[a-zA-Z0-9\-/]{3,15}/.test(owners.join(","))) {
+                if (owners != "" && !/^[a-zA-Z0-9\-, /]{3,300}$/.test(owners.join(","))) {
                     alert("Usernames must be alphanumeric with optional hyphens, be more than 3 characters and less than 16 characters long.");
                     owners = null;
                 }
             }
             try {
                 var _action = action == 'add' ? '' : 'del';
-                var response = await fetch(`roomd.py?setup=true&action=${_action}own&room=` + window.roomname + '&newusers=' + owners.join(","));
+                var response = await fetchAndLimit(`roomd.py?setup=true&action=${_action}own&room=` + window.roomname + '&newusers=' + owners.join(","));
                 if (response.status != 200) {
                     alert("An error occurred while modifying the owner list.  Error: " + await response.text());
                     return;
@@ -649,7 +754,30 @@
         var help = document.getElementById("help");
         help.addEventListener('click', function(event) {
             event.currentTarget.classList.toggle("opened");
+            if (event.currentTarget.classList.contains("opened"))
+                event.currentTarget.innerHTML = "❌";
+            else
+                event.currentTarget.innerHTML = "❓";
             document.querySelector(".tutorialoverlay").classList.toggle("opened");
+        });
+        // permit only allowed characters
+        document.querySelector("#createroom").addEventListener('keydown', (e)=>{if((!e.ctrlKey) && !/^[A-Z0-9]$/.test(e.key)){e.preventDefault()}});
+        document.querySelector("#joinroom").addEventListener('keydown', (e)=>{if((!e.ctrlKey) && !/^[A-Z0-9]$/.test(e.key)){e.preventDefault()}});
+        // Escape detector for body
+        document.body.addEventListener('keydown', (e) => {
+            if ((e.key == 'Escape') && document.querySelector('#help').classList.contains('opened')) {
+	            document.querySelector('#help').click();
+            }
+        });
+        document.getElementById("joinroom").addEventListener('keydown', (e) => {
+            if (e.key == 'Enter') {
+                document.querySelector('#joinroombtn').click();
+            }
+        });
+        document.getElementById("createroom").addEventListener('keydown', (e) => {
+            if (e.key == 'Enter') {
+                document.querySelector('#createroombtn').click();
+            }
         });
     </script>
 </body>

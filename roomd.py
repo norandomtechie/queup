@@ -29,12 +29,12 @@ class DBConnection:
         self.conn.commit()
         self.conn.close()
 
-ROOM_RGX = r'[A-Z0-9]{5}'
-QUEUE_RGX = r'[a-zA-Z0-9\_]{3,15}'
-USER_RGX = r'[a-z0-9]{2,8}'
-WAITDATA_RGX = r'^[0-9]{1,5}$'
-SUBTITLE_RGX = r'[a-zA-Z0-9 \_\-]{1,130}'
-# WAITDATA_RGX = r'^[a-zA-Z0-9]{1,30}$'     # consider using this for comments and/or help later on
+# MUST be in sync with client side!
+ROOM_RGX = r'^[A-Z0-9]{5}$'
+QUEUE_RGX = r'^[a-zA-Z0-9\_]{3,15}$'
+USER_RGX = r'^[a-z0-9]{2,8}$'
+WAITDATA_RGX = r'^[a-zA-Z0-9 \_\'\(\)]{1,50}$'
+SUBTITLE_RGX = r'^[a-zA-Z0-9 \_\-]{1,130}$'
 
 def createroom(room, user):
     if not re.match(ROOM_RGX, room):
@@ -42,11 +42,13 @@ def createroom(room, user):
     if "room"+room in getrooms():
         raise Exception("createroom: Room already exists. It may be in use.")
     with DBConnection(room_db) as [conn, cur]:
-        cur.execute("CREATE TABLE room{0} (owners TEXT, subtitle TEXT)".format(room))
+        cur.execute("CREATE TABLE room{0} (owners TEXT, subtitle TEXT, locked INTEGER)".format(room))
     # add current user as an owner
     ownroom(room, user)
     # create default_queue
     createqueue("default_queue", room)
+    # lock room by default
+    # lockroom(room)
 
 def getroomsubtitle(room):
     if not os.path.exists(room_db):
@@ -72,7 +74,37 @@ def setroomsubtitle(room, subtitle):
         # set the subtitle
         cur.execute("UPDATE room{0} SET subtitle = (?)".format(room), (subtitle,))
 
-# give ownership to newusers
+def lockroom(room):
+    if not os.path.exists(room_db):
+        raise Exception("lockroom: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if not re.match(ROOM_RGX, room):
+        raise Exception("lockroom: Room format incorrect: " + room)
+    with DBConnection(room_db) as [conn, cur]:
+        # set the locked value to 1
+        cur.execute("UPDATE room{0} SET locked = 1".format(room))
+
+def unlockroom(room):
+    if not os.path.exists(room_db):
+        raise Exception("unlockroom: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if not re.match(ROOM_RGX, room):
+        raise Exception("unlockroom: Room format incorrect: " + room)
+    with DBConnection(room_db) as [conn, cur]:
+        # set the locked value to 0
+        cur.execute("UPDATE room{0} SET locked = 0".format(room))
+
+def isroomlocked(room):
+    if not os.path.exists(room_db):
+        raise Exception("isroomlocked: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if not re.match(ROOM_RGX, room):
+        raise Exception("isroomlocked: Room format incorrect: " + room)
+    with DBConnection(room_db) as [conn, cur]:
+        # get the locked value
+        locked = list(cur.execute("SELECT locked FROM room{0}".format(room)))
+        if len(locked) == 0:
+            return False
+        locked = locked[0]
+        return locked[0] == 1
+
 def ownroom(room, newusers):
     if not os.path.exists(room_db):
         raise Exception("ownroom: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
@@ -94,7 +126,6 @@ def ownroom(room, newusers):
             # set owners value to str of allusers
             cur.execute("UPDATE room{0} SET owners = (?)".format(room), (",".join(allusers),))
             
-# remove ownership from delusers
 def delownroom(room, delusers):
     if not os.path.exists(room_db):
         raise Exception("delownroom: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
@@ -159,7 +190,7 @@ def createqueue(queue, room):
         if "room" + room + "_queue" + queue in [x[0] for x in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")]:
             deletequeue(queue, room)
         # create the queue table
-        cur.execute("CREATE TABLE room{0}_queue{1} (username TEXT KEY, time REAL, data TEXT)".format(room, queue))
+        cur.execute("CREATE TABLE room{0}_queue{1} (username TEXT KEY, time REAL, data TEXT, marked INTEGER)".format(room, queue))
         return True
 
 def renamequeue(oldqueue, newqueue, room):
@@ -205,7 +236,7 @@ def addquser(user, waitdata, queue, room):
     elif waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
         raise Exception("addquser: Bad waitdata: " + waitdata)
     with DBConnection(room_db) as [conn, cur]:
-        cur.execute("INSERT INTO room{0}_queue{1} (username, time, data) VALUES (?, ?, ?)".format(room, queue), (user, time(), waitdata))
+        cur.execute("INSERT INTO room{0}_queue{1} (username, time, data, marked) VALUES (?, ?, ?, ?)".format(room, queue), (user, time(), waitdata, '0'))
 
 def delquser(user, queue, room):
     if not os.path.exists(room_db):
@@ -258,11 +289,35 @@ def getusers(queue, room):
                 q = _q
                 if r not in all_users:
                     all_users[r] = {}
-                all_users[r][q] = sorted([row for row in cur.execute("SELECT username, time, data FROM room{0}_queue{1}".format(r, q))])
+                all_users[r][q] = sorted([row for row in cur.execute("SELECT username, time, data, marked FROM room{0}_queue{1}".format(r, q))])
             return all_users
         else:
             # get all users in queue
-            return sorted([row for row in cur.execute("SELECT username, time, data FROM room{0}_queue{1}".format(room, queue))])
+            return sorted([row for row in cur.execute("SELECT username, time, data, marked FROM room{0}_queue{1}".format(room, queue))])
+
+def togglemark(user, queue, room):
+    if not os.path.exists(room_db):
+        raise Exception("togglemark: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if queue == "":
+        raise Exception("togglemark: No queue provided")
+    elif room == "":
+        raise Exception("togglemark: No room provided")
+    elif not re.match(ROOM_RGX, room):
+        raise Exception("togglemark: Room format incorrect: " + room)
+    elif not re.match(QUEUE_RGX, queue):
+        raise Exception("togglemark: Bad queue name: " + queue)
+    elif not re.match(USER_RGX, user):
+        raise Exception("togglemark: Bad username: " + user)
+    with DBConnection(room_db) as [conn, cur]:
+        # get the marked value
+        marked = list(cur.execute("SELECT marked FROM room{0}_queue{1} WHERE username == ?".format(room, queue), (user,)))
+        # if marked is empty, then user is not in queue
+        if len(marked) == 0:
+            raise Exception("togglemark: User {0} not in queue {1} in room {2}".format(user, queue, room))
+        marked = marked[0]
+        # toggle the marked value
+        cur.execute("UPDATE room{0}_queue{1} SET marked = ? WHERE username == ?".format(room, queue), (1 - int(marked[0]), user))
+        return True
 
 def acquireLock(path):
     t = 0
@@ -301,6 +356,40 @@ class Lock:
     def __exit__(self, type, value, traceback):
         releaseLock(self.lock)
 
+# implement a rate limiter class using the token bucket algo 
+# that takes the username, checks if they have an entry in 
+# ratelimit.db, and if so, checks if they have made more than 
+# 3 requests in the last second. if so, return false. otherwise, 
+# return true and update the database.
+
+class RateLimiter:
+    def __init__(self, dbpath):
+        self.dbpath = dbpath
+    def __enter__(self):
+        create = not os.path.exists(self.dbpath)
+        self.conn = sqlite3.connect(self.dbpath)
+        self.cur = self.conn.cursor()
+        if create:
+            with self.conn:
+                self.cur.execute("CREATE TABLE ratelimit (username TEXT KEY, time REAL)")
+        return [self, self.conn, self.cur]
+    def __exit__(self, type, value, traceback):
+        self.conn.commit()
+        self.conn.close()
+    def should_limit(self, username):
+        # get the last 5 requests
+        last5 = [x[0] for x in self.cur.execute("SELECT time FROM ratelimit WHERE username == (?) ORDER BY time DESC LIMIT 5", (username,))]
+        # if there are less than 5 requests, then we're good
+        if len(last5) < 5:
+            self.cur.execute("INSERT INTO ratelimit (username, time) VALUES (?, ?)", (username, time()))
+            return False
+        # if the last request was more than a second ago, we're good
+        if time() - last5[-1] > 1:
+            self.cur.execute("INSERT INTO ratelimit (username, time) VALUES (?, ?)", (username, time()))
+            return False
+        # otherwise, we're not good
+        return True
+
 ######################
 # Main application.
 ######################
@@ -314,13 +403,8 @@ def handler(req):
                 req.write("data: %s\n\r" % json.dumps(getusers("", self.roomname)))
             except:
                 pass
-            
-    # initialize some variables
-    user = req.user
-    query = util.FieldStorage(req)
-    ip = req.useragent_ip
     
-    # then grab config based on IP and init all variables
+    # grab config based on IP and init all variables
     if 'HOME' not in os.environ:
         os.environ['HOME'] = '/var/www/html'
     try:
@@ -330,12 +414,26 @@ def handler(req):
         # so we are being invoked by mod_python, so we need different env vars
         private = os.environ['HOME'] + '/private/queup/'
     
+    # initialize some variables
+    user = req.user
+    if user == "":
+        return apache.HTTP_UNAUTHORIZED
+    
+    # check rate limit for this user
+    with RateLimiter(private + "ratelimit.db") as [rl, conn, cur]:
+        if rl.should_limit(user):
+            return apache.HTTP_PRECONDITION_FAILED   # why I can't do IM_A_TEAPOT or TOO_MANY_REQUESTS is beyond science
+    
+    query = util.FieldStorage(req)
+    ip = req.useragent_ip
+    
     room = query.get('room', '').decode('utf-8')
     if len(room) != 5 or not re.search(r"[A-Z0-9]{5}", room):
         req.log_error("Invalid room name: " + room + "\n")
         return apache.HTTP_BAD_REQUEST 
     action = query.get('action', '').decode('utf-8')
-    if 'sseupdate' not in query and not (action in ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setsub']):
+    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setsub', 'lock', 'unlock', 'clear', 'mark']
+    if 'sseupdate' not in query and not (action in actions):
         req.log_error("Invalid action: " + action + "\n")
         return apache.HTTP_BAD_REQUEST
     setup = query.get('setup', '').decode('utf-8')
@@ -382,15 +480,16 @@ def handler(req):
     # this section handles adding and removing in a room
     if roomsetup:
         # check actions based on whether adding/deleting
-        will_add    = action == 'add'  # room should not be in the database already
-        will_del    = action == 'del' and "room"+room in rooms # room was in the database
-        will_chk    = action == 'chk' and "room"+room in rooms # room was in the database
-        will_own    = action == 'own' and "room"+room in rooms # room was in the database
-        will_own    = will_own and (newusers == "" or all([re.match(USER_RGX, x) for x in newusers.split(",")]))
-        will_delown = action == 'delown' and "room"+room in rooms # room was in the database
-        will_delown = will_delown and (newusers == "" or all([re.match(USER_RGX, x) for x in newusers.split(",")]))
-        will_setsub = action == 'setsub' and "room"+room in rooms # room was in the database
-        will_setsub = will_setsub and (subtitle == "" or re.match(SUBTITLE_RGX, subtitle))
+        will_add     = action == 'add'  # room should not be in the database already
+        will_del     = action == 'del' and "room"+room in rooms # room was in the database
+        will_chk     = action == 'chk' and "room"+room in rooms # room was in the database
+        will_own     = action == 'own' and "room"+room in rooms # room was in the database
+        will_own     = will_own and (newusers == "" or all([re.match(USER_RGX, x) for x in newusers.split(",")]))
+        will_delown  = action == 'delown' and "room"+room in rooms # room was in the database
+        will_delown  = will_delown and (newusers == "" or all([re.match(USER_RGX, x) for x in newusers.split(",")]))
+        will_setsub  = action == 'setsub' and "room"+room in rooms # room was in the database
+        will_setsub  = will_setsub and (subtitle == "" or re.match(SUBTITLE_RGX, subtitle))
+        will_tgllock = action in ['lock', 'unlock'] and "room"+room in rooms # room was in the database
         # perform the action
         if will_add:
             try:
@@ -404,6 +503,7 @@ def handler(req):
             userdata = getusers("", room)
             userdata["is-owner"] = is_owner
             userdata["subtitle"] = ""
+            userdata["is-locked"] = False
             req.write(json.dumps(userdata))
             return apache.OK
         elif will_chk:
@@ -413,9 +513,10 @@ def handler(req):
             userdata = getusers("", room)
             userdata["is-owner"] = is_owner
             userdata["subtitle"] = getroomsubtitle(room)
+            userdata["is-locked"] = isroomlocked(room)
             req.write(json.dumps(userdata))
             return apache.OK
-        elif will_del or will_own or will_delown or will_setsub:
+        else:
             if not is_owner:
                 req.log_error("roomsetup: User %s is not an owner of room %s. Query was %s\r\n" % (user, room, query))
                 return apache.HTTP_UNAUTHORIZED
@@ -440,15 +541,24 @@ def handler(req):
                     lockAndWriteLog(",".join([str(time()), user, room, "setsub", subtitle]))
                     req.write(json.dumps({"status": "success"}))
                     return apache.OK
+                elif will_tgllock:
+                    if action == 'unlock':
+                        unlockroom(room)
+                        lockAndWriteLog(",".join([str(time()), user, room, "unlock"]))
+                    else:
+                        lockroom(room)
+                        lockAndWriteLog(",".join([str(time()), user, room, "lock"]))
+                    req.write(json.dumps({"status": "success"}))
+                    return apache.OK
                 else:
                     req.log_error("No valid query " + str(query) + "\n")
                     return apache.HTTP_BAD_REQUEST
-            except sqlite3.IntegrityError: 
+            except sqlite3.IntegrityError:  # our fault
                 req.log_error("IntegrityError running action %s on room %s by owner %s from %s. Query was %s\r\n" % (action, room, user, ip, query))
                 return apache.HTTP_INTERNAL_SERVER_ERROR
-        else:
-            req.log_error("Unrecognized error running action %s on room %s by user %s from %s. Query was %s\r\n" % (action, room, user, ip, query))
-            return apache.HTTP_BAD_REQUEST
+            except: # their fault
+                req.log_error("Unrecognized error running action %s on room %s by user %s from %s. Query was %s\r\n" % (action, room, user, ip, query))
+                return apache.HTTP_BAD_REQUEST
     elif queuesetup:
         if not is_owner:
             req.log_error("queuesetup: User %s is not an owner of room %s. Query was %s\r\n" % (user, room, query))
@@ -463,6 +573,7 @@ def handler(req):
             return apache.HTTP_BAD_REQUEST
         queue = query.get('queue', '').encode('ascii').strip()
         newqueue = query.get('newqueue', '').decode('utf-8').strip()
+        username = query.get('username', '').decode('utf-8').strip()
         # check actions based on whether adding/deleting/checking/renaming
         will_add = query.get('action', None).decode('utf-8').strip() == 'add'
         will_del = query.get('action', None).decode('utf-8').strip() == 'del' and "room"+room in rooms # room was in the database
@@ -471,9 +582,13 @@ def handler(req):
         will_chk = will_chk and queue in getqueues(room) # queue was in the database
         will_ren = query.get('action', None).decode('utf-8').strip() == 'ren' and "room"+room in rooms # room was in the database
         will_ren = will_ren and queue in getqueues(room) # queue was in the database
-        will_ren = will_ren and newqueue not in getqueues(room) # new queue must not already exist
+        will_ren = will_ren and re.match(QUEUE_RGX, newqueue) and newqueue not in getqueues(room) # new queue must not already exist and newqueue != ''
+        will_clear = query.get('action', None).decode('utf-8').strip() == 'clear' and "room"+room in rooms # room was in the database
+        will_clear = will_clear and queue in getqueues(room) # queue was in the database
+        will_mark = query.get('action', None).decode('utf-8').strip() == 'mark' and "room"+room in rooms # room was in the database
+        will_mark = will_mark and queue in getqueues(room) and any([username == x[0] for x in getusers(queue, room)])   # queue was in the database and user is in the queue
         # perform the action
-        if will_add or will_del or will_ren:
+        if will_add or will_del or will_ren or will_clear or will_mark:
             try:
                 if will_add:
                     try:
@@ -486,15 +601,30 @@ def handler(req):
                 elif will_del:
                     deletequeue(queue, room)
                     lockAndWriteLog(",".join([str(time()), user, room, "removeq"]))
-                else:   # will_ren
-                    newqueue = query.get('newqueue', None).decode('utf-8').strip()
+                elif will_ren:
                     renamequeue(queue, newqueue, room)
                     lockAndWriteLog(",".join([str(time()), user, room, "removeq"]))
                     req.write(json.dumps(getusers("", room)))
+                elif will_clear:
+                    # get all users and remove them from the queue
+                    for u in getusers(queue, room):
+                        delquser(u[0], queue, room)
+                    req.write(json.dumps(getusers("", room)))
+                elif will_mark:
+                    # toggle mark on user
+                    togglemark(username, queue, room)
+                    req.write(json.dumps(getusers("", room)))
+                else:
+                    req.log_error("No valid under queuesetup query " + str(query) + "\n")
+                    return apache.HTTP_BAD_REQUEST
                 return apache.OK
             except sqlite3.IntegrityError: 
                 req.log_error("IntegrityError: Error adding/removing room %s by owner %s from %s\r\n" % (room, user, ip))
                 return apache.HTTP_INTERNAL_SERVER_ERROR
+            except Exception as e:
+                req.log_error("Error adding/removing/renaming queue %s in room %s by owner %s from %s\r\n" % (queue, room, user, ip))
+                req.log_error(str(e))
+                return apache.OK
         elif will_chk:
             req.write(json.dumps(getusers("", room)))
             return apache.OK
@@ -513,35 +643,42 @@ def handler(req):
             return apache.HTTP_BAD_REQUEST
         # room name should already be in database
         db_queue = getusers(queue, room)
+        # check if room is locked before adding anyone unless we are owner
         # perform actions based on whether adding/deleting (will_del does not include owner deleting users)
-        will_add = query.get('action', '').encode('ascii').strip() == 'add' and not any([user == x[0] for x in db_queue]) # username should not be in the room already
-        will_del = query.get('action', '').encode('ascii').strip() == 'del' and any([user == x[0] for x in db_queue]) # username was in the room
-        staff_del = is_owner and query.get('action', '').encode('ascii').strip() == 'del' and username is not None and any([username == x[0] for x in db_queue]) # username was in the room
+        will_add = action == 'add' and not any([user == x[0] for x in db_queue]) # username should not be in the room already
+        will_del = action == 'del' and any([user == x[0] for x in db_queue]) and (username == '') # username was in the room and is not someone else or empty
+        staff_del = is_owner and action == 'del' and username is not None and any([username == x[0] for x in db_queue]) # username was in the room
+        if isroomlocked(room) and not is_owner and will_add:
+            req.log_error("Room %s is locked. Query was %s\r\n" % (room, query))
+            return apache.HTTP_LOCKED
         # only make changes to database if changes are to be made
-        if will_add or will_del:
-            try:
-                if will_add:
-                    waitdata = query.get('waitdata', '').encode('ascii').strip()
-                    if waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
-                        req.log_error("Invalid waitdata '" + waitdata + "' when adding " + user + " to queue. \n")
-                        return apache.HTTP_BAD_REQUEST
-                    addquser(user, waitdata, queue, room)
-                    lockAndWriteLog(",".join([str(time()), user, room, "add"]))
-                else:
-                    delquser(user, queue, room)
-                    lockAndWriteLog(",".join([str(time()), user, room, "del"]))
-                    req.write("success\n")
-            except sqlite3.IntegrityError: 
-                req.log_error("IntegrityError: Error adding/removing station %d for user %s in room %s from %s\r\n" % (user, room, ip))
-                return apache.HTTP_INTERNAL_SERVER_ERROR
-        elif staff_del:
-            # owner is removing someone from the queue
-            delquser(username, queue, room)
-            lockAndWriteLog(",".join([str(time()), user, username, room, "del"]))
-            req.write("success\n")
-        else:
-            req.log_error("Invalid action in querychecked: " + query.get('action', None) + "\n")
-            return apache.HTTP_BAD_REQUEST
+        try:
+            if will_add:
+                waitdata = query.get('waitdata', '').encode('ascii').strip()
+                if waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
+                    req.log_error("Invalid waitdata '" + waitdata + "' when adding " + user + " to queue. \n")
+                    return apache.HTTP_BAD_REQUEST
+                addquser(user, waitdata, queue, room)
+                lockAndWriteLog(",".join([str(time()), user, waitdata, room, "add"]))
+            elif will_del:
+                delquser(user, queue, room)
+                lockAndWriteLog(",".join([str(time()), user, room, "del"]))
+                req.write("success\n")
+            elif staff_del:
+                # owner is removing someone from the queue
+                delquser(username, queue, room)
+                lockAndWriteLog(",".join([str(time()), user, username, room, "staffdel"]))
+                req.write("success\n")
+            else:
+                req.log_error("Invalid action in querychecked: " + query.get('action', None) + "\n")
+                return apache.HTTP_BAD_REQUEST
+        except sqlite3.IntegrityError: 
+            req.log_error("IntegrityError: Error adding/removing station %d for user %s in room %s from %s\r\n" % (user, room, ip))
+            return apache.HTTP_INTERNAL_SERVER_ERROR
+        except Exception as e:
+            req.log_error("Error in querychecked: action %s, station %d for user %s in room %s from %s\r\n" % (action, user, room, ip))
+            req.log_error(str(e))
+            return apache.OK
         return apache.OK
     #
     # Otherwise it is waiting for updates
