@@ -3,3 +3,5 @@
 *.conf
 *.log
 *.bz2
+**/__pycache__/
+skip_rooms
