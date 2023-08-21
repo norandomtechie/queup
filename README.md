@@ -26,7 +26,7 @@ As a measure of protection, non-owners cannot edit the room description or add/r
 
 Room owners, who are typically staff members or TAs, may also "mark" a student who added themselves to the queue to indicate that they are being helped.  They can either unmark or delete the student.  
 
-[marking.webm](marking.webm)
+[marking.webm](https://github.com/ece270/queup/assets/12859429/c7632f67-ac60-4431-844f-89890ad8b68e)
 
 Room owners may also lock/unlock the room via the Settings panel to ensure that attendees cannot stuff the queue before office hours have actually started.  By default when a room is created, it is unlocked.
 
