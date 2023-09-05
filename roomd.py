@@ -33,8 +33,8 @@ class DBConnection:
 ROOM_RGX = r'^[A-Z0-9]{5}$'
 QUEUE_RGX = r'^[a-zA-Z0-9\_]{3,15}$'
 USER_RGX = r'^[a-z0-9]{2,8}$'
-WAITDATA_RGX = r'^[a-zA-Z0-9 \_\'\(\)]{1,50}$'
-SUBTITLE_RGX = r'^[a-zA-Z0-9 \_\-]{1,130}$'
+WAITDATA_RGX = r'^[a-zA-Z0-9 \,\_\'\(\)]{1,50}$'
+SUBTITLE_RGX = r'^[a-zA-Z0-9 \,\_\'\(\)\-]{1,130}$'
 
 def createroom(room, user):
     if not re.match(ROOM_RGX, room):
@@ -319,6 +319,12 @@ def togglemark(user, queue, room):
         cur.execute("UPDATE room{0}_queue{1} SET marked = ? WHERE username == ?".format(room, queue), (1 - int(marked[0]), user))
         return True
 
+def getroompermanency(room):
+    if not os.path.exists(private + "nodel_rooms"):
+        return False
+    with open(private + "nodel_rooms", "r") as f:
+        return room in f.read().split("\n")
+
 def acquireLock(path):
     t = 0
     while t < 5 and os.path.exists(path + ".lck"):
@@ -504,6 +510,8 @@ def handler(req):
             userdata["is-owner"] = is_owner
             userdata["subtitle"] = ""
             userdata["is-locked"] = False
+            # it is possible to define a room first before creating it, so check permanency anyway
+            userdata["is-permanent"] = getroompermanency(room)
             req.write(json.dumps(userdata))
             return apache.OK
         elif will_chk:
@@ -514,6 +522,7 @@ def handler(req):
             userdata["is-owner"] = is_owner
             userdata["subtitle"] = getroomsubtitle(room)
             userdata["is-locked"] = isroomlocked(room)
+            userdata["is-permanent"] = getroompermanency(room)
             req.write(json.dumps(userdata))
             return apache.OK
         else:
@@ -522,6 +531,8 @@ def handler(req):
                 return apache.HTTP_UNAUTHORIZED
             try:
                 if will_del:
+                    if room in open(private + "nodel_rooms").read():
+                        return apache.HTTP_BAD_REQUEST
                     deleteroom(room)
                     lockAndWriteLog(",".join([str(time()), user, room, "remover"]))
                     req.write(json.dumps({"status": "success"}))

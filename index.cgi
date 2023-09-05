@@ -5,6 +5,11 @@ import os, io, sys, codecs
 
 username = os.environ['REMOTE_USER']
 
+if "@purdue.edu" in username:
+    print("Content-Type: text/plain\r\n")
+    print("Please log in with your username, not your email.  You may need to clear site settings and try again.")
+    sys.exit(0)
+
 # enables unicode printing
 sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
 
