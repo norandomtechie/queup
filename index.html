@@ -31,6 +31,7 @@
                     <button class="btn" id="addroomowners" onclick="modRoomOwners('add')">Add room owners</button>
                     <button class="btn" id="delroomowners" onclick="modRoomOwners('del')">Delete room owners</button>
                     <button class="btn" id="toggleroomlock" onclick="toggleRoomLock('del')">Lock Room</button>
+                    <button class="btn" id="adminpanel" onclick="window.open('admin?room='+window.roomname, '_blank');">View control panel</button>
                     <p id="roomstatus">Room status: --roomstatus--</p>
                 </div>
             </div>
@@ -229,6 +230,7 @@
             document.getElementById("addroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("delroomowners").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("toggleroomlock").classList.toggle("hide-if-not-owner", !window.is_owner);
+            document.getElementById("adminpanel").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("roomstatus").classList.toggle("hide-if-not-owner", !window.is_owner);
             // very hacky way to duplicate element while getting rid of event listeners.
             if (window.is_owner) {
