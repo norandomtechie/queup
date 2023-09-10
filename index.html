@@ -22,7 +22,7 @@
             </div>
             <div id="collapse" class="collapsible-in-overlay">
                 <div style='display: flex; flex-direction: row;'>
-                    <p id="help" class="">❓</p>
+                    <a target="_blank" href="https://github.com/norandomtechie/queup" style="text-decoration-line: none;"><p id="help" class="">❓</p></a>
                     <p id="gear" class="">⚙️</p>
                 </div>
                 <div class="collapsible">
@@ -47,7 +47,6 @@
         <div class="panel" id="createpanel">
             <h1>Create a room</h1>
             <div class="row" id="createroomrow" style="justify-content: center; margin-bottom: 50px">
-                <!-- <label for="createroom">Room name:</label> -->
                 <input type="text" id="createroom" name="createroom" pattern="[A-Z0-9]{5}" placeholder="🔄 creates a valid room code." value="">
                 <p id="genroom" style="cursor: pointer; font-size: 40px; margin: 0">🔁</p>
             </div>
@@ -56,37 +55,11 @@
         <div class="panel">
             <h1>Join a room</h1>
             <div class="row" style="margin-bottom: 50px">
-                <!-- <label for="joinroom">Room name:</label> -->
                 <input type="text" id="joinroom" name="joinroom" placeholder="Enter your 5-char room ID here." pattern="[A-Z0-9]{5}" value="">
             </div>
             <input type="button" id="joinroombtn" style="cursor: pointer" value="Join">
         </div>
     </div>
-    <div class="tutorialoverlay">
-        <h1 style="text-align: center; font-size: 32px">QueUp Help</h1>
-        <p>The QueUp system is designed to give Purdue ECE students and staff the ability to quickly create a queuing room, capable of handling multiple queues, and to be able to customize it to fit your class needs.</p>
-        <p>Quick start:</p>
-        <ul>
-            <li>Generate a room code by clicking the 🔁 button.  (Room codes can only be 5 alphanumeric characters.)</li>
-            <li>Click "Create".</li>
-            <li>To join a queue, click the "+" button for a specific queue.  To leave a queue, click the button with your username on it.</li>
-            <li>Share the room code with anyone who wishes to join the queue.  They must enter the code in the "Join a room" panel.</li>
-        </ul>
-        <p>Each room also has a description that you can customize to help users ensure they're in the right room. </p> 
-        <div class="center"><video autoplay loop src="description.webm"></video></div>
-        <p>You can rename the "default-queue" to whatever you wish (checkoff, help, aisle1, etc.), as well as add new queues with their own names as well.  Click the name of the queue to rename it, or click the "Add queue" button to add a new queue.</p>
-        <div class="center"><video autoplay loop src="queuename.webm"></video></div>
-        <p></p>
-        <div class="center"><video autoplay loop src="addqueue.webm"></video></div>
-        <p>If you create a room, you are automatically the "owner" for the room, which is what lets you set the room description and add/rename queues.  If you wish to give someone else the same privileges as you, click the ⚙️ icon, click "Add room owners", and type in a list of Purdue account usernames, separated by commas.</p>  
-        <div class="center"><video autoplay loop src="addowner.webm"></video></div>
-        <p>You can also remove owners (including yourself) by clicking the ⚙️ icon and clicking "Delete room owners", with the same input requirements.  Be sure to have at least one owner for the room - zero owners are not permitted as the room will be inaccessible.</p>
-        <p>Each room will remain open as long is there is some activity for 24 hours, after which it will be deleted.  You can also delete a room manually by clicking the ⚙️ icon and clicking "Close Room".</p>
-        <p>As a measure of protection, non-owners cannot edit the room description or add/rename queues.</p>
-        <p>Room owners, who are typically staff members or TAs, may also "mark" a student who added themselves to the queue to indicate that they are being helped.  They can either unmark or delete the student.</p>
-        <div class="center"><video autoplay loop src="marking.webm"></video></div>
-        <p>Room owners may also lock/unlock the room via the Settings panel to ensure that attendees cannot stuff the queue before office hours have actually started.  By default when a room is created, it is unlocked.</p>
-        <p>If you wish to have a permanent room that you do not have to recreate due to a large number of room owners and customized queues, please contact Niraj (niraj@purdue.edu) for the room to be added to a permanent list.</p>
     <script>
         window.username = "--username--";
         window.is_owner = false;  // not a risk if changed manually (maliciously) client-side.
@@ -99,7 +72,7 @@
                         alert("You appear to be sending too many requests.  Please slow down.");
                         reject("Too many requests");
                     }
-                    if (resp.status == 423) {
+                    else if (resp.status == 423) {
                         alert("This room is currently locked.  Ask the owner of the room (typically a TA or course staff) to unlock it.");
                         reject("Room locked");
                     }
@@ -204,7 +177,7 @@
                 var response = await fetchAndLimit('roomd.py?setup=true&action=add&room=' + roomname);
                 console.log(response);
                 if (response.status != 200) {
-                    alert("An error occurred while creating the room. Error: " + await response.text());
+                    alert("An error occurred while creating the room. It's possible the server is just down - try again later.  If this was after multiple attempts, the room name may already be taken.");
                     return;
                 }
                 setupRoom(response, roomname);
@@ -227,6 +200,7 @@
                     alert("An error occurred while joining the room.  Please double check the room code.");
                     return;
                 }
+                localStorage.lastjoinedroom = document.getElementById("joinroom").value;
                 setupRoom(response, roomname);
             }
             catch(err) {
@@ -262,7 +236,7 @@
                 document.getElementById("roomstatus").innerHTML = `Room status: ${window.roompermanent ? "Permanent" : "Temporary"}`;
                 document.getElementById("roomstatus").addEventListener("click", (e) => {
                     alert(window.roompermanent ? `This room has been marked permanent.  As a result, it cannot be deleted, and will not automatically be removed after 24 hours of inactivity.` 
-                            : `This room is temporary, which means it will be removed after 24 hours of inactivity, and can be deleted by any of the room owners.  If you are a TA/instructor/professor who wishes to keep this room layout permanently to avoid having to recreate the room every day, please contact Niraj (niraj@purdue.edu) with the room code to  make it permanent.`)
+                            : `This room is temporary, which means it will be removed after 24 hours of inactivity, and can be deleted by any of the room owners.  If you are a TA/instructor/professor who wishes to keep this room layout permanently to avoid having to recreate the room every day, please contact Niraj (niraj@purdue.edu) with the room code to make it permanent.`)
                 });
             }
             if (window.roomlocked == true)
@@ -278,6 +252,7 @@
             if (typeof(EventSource) !== "undefined") {
                 window.evtSource = new EventSource("roomd.py?sseupdate=true&room=" + window.roomname);
                 window.evtSource.onopen = function() {
+                    console.log("Connection established.");
                     document.getElementsByClassName("queueoverlay")[0].style.display = "none";
                 };
                 window.evtSource.onmessage = function(event) {
@@ -301,7 +276,11 @@
                 window.evtSource.onerror = () => {
                     if (!window.disableErrors) {
                         window.evtSource.close();
-                        alert("An error has occurred awaiting updates from the server.  Please refresh the page.");
+                        console.log("Connection lost.");
+                        delete window.evtSource;
+                        window.evtSource = null;
+                        // retry...
+                        setTimeout(createEventSource, 1000);
                     }
                 }
             }
@@ -313,7 +292,7 @@
             // json format - { 'room': { 'queue': [username, time] } }
             // so we extract queues by just taking the first key and keying into "json" to get the queues.
             // make sure to sort by longest time created!
-            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner"].includes(e))[0]];
+            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner", "is-permanent", "owners"].includes(e))[0]];
             // delete queues that don't exist in the JSON
             Array.from(document.querySelectorAll(".queue"))
             .filter(_q => _q.id != "queueadd")                      // must be a real queue - do not remove "Add Queue"!
@@ -473,7 +452,13 @@
             if (list.length > 0) {
                 list[0].remove();
             }
-            // response will bring back the add button automatically
+            // add back add button if it's not there
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter-add'));
+            if (list.length == 0) {
+                var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">+</p></div>`;
+                var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
+                document.querySelector(`#queue${queue}`).appendChild(added);
+            }
         }
         function delFromRoomTA(username, queue) {
             fetchAndLimit(`roomd.py/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
@@ -492,7 +477,7 @@
                     if (action == "add") {
                         var userdata = null;
                         while ((userdata == null) || !/^[a-zA-Z0-9 ,\_\'\(\)]{1,50}$/.test(userdata)) {
-                            var userdata = prompt("Enter text that would allow a TA to identify you in-person or online (eg. your name, station number or Zoom name).  Press Escape/Cancel to close.", window.userdata);
+                            var userdata = prompt("Enter text that would allow a TA to identify you in-person (eg. your name, station number) or online (Zoom name).  Press Escape/Cancel to close.", window.userdata);
                             if (userdata == null) {
                                 window.disableOperations = false;
                                 return;
@@ -500,9 +485,19 @@
                         }
                         window.userdata = userdata;
                         fetchAndLimit(`roomd.py/?action=add&room=${window.roomname}&queue=${queue}&waitdata=${userdata}`)
+                        .then(r => r.text())
+                        .then(t => {
+                            if (t.startsWith("[cooldown]")) {
+                                alert(t.split(" ").slice(1).join(" "));
+                                delSelf(queue);
+                            }
+                        })
                         .catch(err => {
                             window.disableOperations = false;
                             if (err.includes("Room locked")) {
+                                delSelf(queue);
+                            }
+                            else if (err.includes("[cooldown]")) {
                                 delSelf(queue);
                             }
                         })
@@ -767,25 +762,7 @@
             event.currentTarget.classList.toggle("opened");
             document.querySelector(".collapsible").classList.toggle("opened");
         });
-        // set up help overlay
-        var help = document.getElementById("help");
-        help.addEventListener('click', function(event) {
-            event.currentTarget.classList.toggle("opened");
-            if (event.currentTarget.classList.contains("opened"))
-                event.currentTarget.innerHTML = "❌";
-            else
-                event.currentTarget.innerHTML = "❓";
-            document.querySelector(".tutorialoverlay").classList.toggle("opened");
-        });
         // permit only allowed characters
-        // document.querySelector("#createroom").addEventListener('keydown', (e)=>{if((!e.ctrlKey) && !/^[A-Z0-9]$/.test(e.key)){e.preventDefault()}});
-        // document.querySelector("#joinroom").addEventListener('keydown', (e)=>{if((!e.ctrlKey) && !/^[A-Z0-9]$/.test(e.key)){e.preventDefault()}});
-        // Escape detector for body
-        document.body.addEventListener('keydown', (e) => {
-            if ((e.key == 'Escape') && document.querySelector('#help').classList.contains('opened')) {
-	            document.querySelector('#help').click();
-            }
-        });
         document.getElementById("joinroom").addEventListener('keydown', (e) => {
             if (e.key == 'Enter') {
                 document.querySelector('#joinroombtn').click();
@@ -800,9 +777,9 @@
         document.querySelector("#createroombtn").addEventListener('click', createRoom);
         document.querySelector("#joinroombtn").addEventListener('click', joinRoom);
         document.querySelector("#genroom").addEventListener('click', generateRandomRoomName);
-        document.querySelector("#roomstatus").addEventListener('click', (e) => {
-
-        });
+        if (localStorage.lastjoinedroom) {
+            document.getElementById("joinroom").value = localStorage.lastjoinedroom;
+        }
     </script>
 </body>
 <!-- Designed and deployed by Niraj Menon, 2023. -->

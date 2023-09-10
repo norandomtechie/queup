@@ -42,7 +42,7 @@ def createroom(room, user):
     if "room"+room in getrooms():
         raise Exception("createroom: Room already exists. It may be in use.")
     with DBConnection(room_db) as [conn, cur]:
-        cur.execute("CREATE TABLE room{0} (owners TEXT, subtitle TEXT, locked INTEGER)".format(room))
+        cur.execute("CREATE TABLE room{0} (owners TEXT, subtitle TEXT, locked INTEGER, cooldown INTEGER)".format(room))
     # add current user as an owner
     ownroom(room, user)
     # create default_queue
@@ -220,6 +220,32 @@ def deletequeue(queue, room):
         if "room" + room + "_queue" + queue in [x[0] for x in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")]:
             cur.execute("DROP TABLE room{0}_queue{1}".format(room, queue))
 
+def setcooldown(cooldown, room):
+    if not os.path.exists(room_db):
+        raise Exception("setcooldown: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if not re.match(ROOM_RGX, room):
+        raise Exception("setcooldown: Room format incorrect: " + room)
+    with DBConnection(room_db) as [conn, cur]:
+        # set the cooldown value
+        cur.execute("UPDATE room{0} SET cooldown = ?".format(room), (str(cooldown),))
+    
+def getcooldown(room):
+    if not os.path.exists(room_db):
+        raise Exception("getcooldown: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
+    if not re.match(ROOM_RGX, room):
+        raise Exception("getcooldown: Room format incorrect: " + room)
+    with DBConnection(room_db) as [conn, cur]:
+        # get the cooldown value
+        cooldown = list(cur.execute("SELECT cooldown FROM room{0}".format(room)))
+        if len(cooldown) == 0:
+            return 0
+        if cooldown[0][0] == None:
+            setcooldown(0, room)
+            cooldown = 0
+        else:
+            cooldown = int(cooldown[0][0])
+        return cooldown
+
 def addquser(user, waitdata, queue, room):
     if not os.path.exists(room_db):
         raise Exception("addquser: " + room_db.split("/")[-1].replace(".db", "") + " does not exist.")
@@ -272,6 +298,15 @@ def getqueues(room):
         else:
             # get all queues in room
             return [str(row[0].replace("room{0}_queue".format(room), "")) for row in cur.execute("SELECT name FROM sqlite_master") if row[0].startswith("room{0}_queue".format(room))]
+
+def getlastadd(room, username):
+    if not os.path.exists(private + "room.log"):
+        return 0    # no one could have added themselves to this queue at UNIX epoch!
+    with open(private + "room.log", "r") as f:
+        data = [x.split(",") for x in f.read().split("\n") if room in x and username in x and "uadd" in x]
+    if len(data) == 0:
+        return 0    # no one could have added themselves to this queue at UNIX epoch!
+    return float(data[-1][0])   # but we can find out when they did it last
 
 def getusers(queue, room):
     if not os.path.exists(room_db):
@@ -438,7 +473,7 @@ def handler(req):
         req.log_error("Invalid room name: " + room + "\n")
         return apache.HTTP_BAD_REQUEST 
     action = query.get('action', '').decode('utf-8')
-    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setsub', 'lock', 'unlock', 'clear', 'mark']
+    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark']
     if 'sseupdate' not in query and not (action in actions):
         req.log_error("Invalid action: " + action + "\n")
         return apache.HTTP_BAD_REQUEST
@@ -496,6 +531,7 @@ def handler(req):
         will_setsub  = action == 'setsub' and "room"+room in rooms # room was in the database
         will_setsub  = will_setsub and (subtitle == "" or re.match(SUBTITLE_RGX, subtitle))
         will_tgllock = action in ['lock', 'unlock'] and "room"+room in rooms # room was in the database
+        will_setcool = action == 'setcool' and "room"+room in rooms # room was in the database
         # perform the action
         if will_add:
             try:
@@ -504,14 +540,17 @@ def handler(req):
                 req.log_error("Error creating room %s by owner %s from %s\r\n" % (room, user, ip))
                 req.write(str(e))
                 return apache.OK
-            lockAndWriteLog(",".join([str(time()), user, room, "create"]))
             rooms = getrooms()
             userdata = getusers("", room)
             userdata["is-owner"] = is_owner
+            userdata["cooldown"] = getcooldown(room)
+            if is_owner:
+                userdata["owners"] = getowners(room)
             userdata["subtitle"] = ""
             userdata["is-locked"] = False
             # it is possible to define a room first before creating it, so check permanency anyway
             userdata["is-permanent"] = getroompermanency(room)
+            lockAndWriteLog(",".join([str(time()), user, "rcreate", room]))
             req.write(json.dumps(userdata))
             return apache.OK
         elif will_chk:
@@ -520,9 +559,14 @@ def handler(req):
                 return apache.HTTP_BAD_REQUEST
             userdata = getusers("", room)
             userdata["is-owner"] = is_owner
+            userdata["cooldown"] = getcooldown(room)
+            if is_owner:
+                userdata["owners"] = getowners(room)
             userdata["subtitle"] = getroomsubtitle(room)
             userdata["is-locked"] = isroomlocked(room)
             userdata["is-permanent"] = getroompermanency(room)
+            if "admin" not in query or not is_owner:
+                lockAndWriteLog(",".join([str(time()), user, "rchk", room]))
             req.write(json.dumps(userdata))
             return apache.OK
         else:
@@ -534,31 +578,37 @@ def handler(req):
                     if room in open(private + "nodel_rooms").read():
                         return apache.HTTP_BAD_REQUEST
                     deleteroom(room)
-                    lockAndWriteLog(",".join([str(time()), user, room, "remover"]))
+                    lockAndWriteLog(",".join([str(time()), user, "rdel", room]))
                     req.write(json.dumps({"status": "success"}))
                     return apache.OK
                 elif will_own:
                     ownroom(room, newusers)
-                    lockAndWriteLog(",".join([str(time()), user, room, "own", newusers]))
+                    lockAndWriteLog(",".join([str(time()), user, "rown", room, newusers]))
                     req.write(json.dumps(getowners(room)))
                     return apache.OK
                 elif will_delown:
                     delownroom(room, newusers)
-                    lockAndWriteLog(",".join([str(time()), user, room, "delown", newusers]))
+                    lockAndWriteLog(",".join([str(time()), user, "rdelown", room, newusers]))
                     req.write(json.dumps(getowners(room)))
                     return apache.OK
                 elif will_setsub:
                     setroomsubtitle(room, subtitle)
-                    lockAndWriteLog(",".join([str(time()), user, room, "setsub", subtitle]))
+                    lockAndWriteLog(",".join([str(time()), user, "rsub", room, subtitle]))
                     req.write(json.dumps({"status": "success"}))
                     return apache.OK
                 elif will_tgllock:
                     if action == 'unlock':
                         unlockroom(room)
-                        lockAndWriteLog(",".join([str(time()), user, room, "unlock"]))
+                        lockAndWriteLog(",".join([str(time()), user, "runlock", room]))
                     else:
                         lockroom(room)
-                        lockAndWriteLog(",".join([str(time()), user, room, "lock"]))
+                        lockAndWriteLog(",".join([str(time()), user, "rlock", room]))
+                    req.write(json.dumps({"status": "success"}))
+                    return apache.OK
+                elif will_setcool:
+                    cooldown = int(query.get('cooldown', '').decode('utf-8'))
+                    setcooldown(cooldown, room)
+                    lockAndWriteLog(",".join([str(time()), user, "rcool", room, str(cooldown)]))
                     req.write(json.dumps({"status": "success"}))
                     return apache.OK
                 else:
@@ -607,23 +657,25 @@ def handler(req):
                     except sqlite3.OperationalError as e:
                         if "already exists" in str(e):
                             pass
-                    lockAndWriteLog(",".join([str(time()), user, room, "createq"]))
+                    lockAndWriteLog(",".join([str(time()), user, "qadd", room, queue]))
                     req.write(json.dumps(getusers("", room)))
                 elif will_del:
                     deletequeue(queue, room)
-                    lockAndWriteLog(",".join([str(time()), user, room, "removeq"]))
+                    lockAndWriteLog(",".join([str(time()), user, "qdel", room, queue]))
                 elif will_ren:
                     renamequeue(queue, newqueue, room)
-                    lockAndWriteLog(",".join([str(time()), user, room, "removeq"]))
+                    lockAndWriteLog(",".join([str(time()), user, "qren", room, queue, newqueue]))
                     req.write(json.dumps(getusers("", room)))
                 elif will_clear:
                     # get all users and remove them from the queue
                     for u in getusers(queue, room):
                         delquser(u[0], queue, room)
+                    lockAndWriteLog(",".join([str(time()), user, "qclr", room, queue]))
                     req.write(json.dumps(getusers("", room)))
                 elif will_mark:
                     # toggle mark on user
                     togglemark(username, queue, room)
+                    lockAndWriteLog(",".join([str(time()), user, "qmrk", room, queue, username]))
                     req.write(json.dumps(getusers("", room)))
                 else:
                     req.log_error("No valid under queuesetup query " + str(query) + "\n")
@@ -665,20 +717,32 @@ def handler(req):
         # only make changes to database if changes are to be made
         try:
             if will_add:
+                # check if there is a cooldown period, and that user is not adding themselves more than
+                # COOLDOWN minutes since their last add
+                cooldown = getcooldown(room)
+                if cooldown > 0:
+                    lastadd = getlastadd(room, user)
+                    if (time() - lastadd) < (cooldown * 60):
+                        req.log_error("User %s is adding themselves to room %s too often. Query was %s\r\n" % (user, room, query))
+                        rem_min = int(cooldown - (time() - lastadd) / 60)
+                        rem_sec = int((cooldown - (time() - lastadd) / 60) % 1 * 60)
+                        req.write("[cooldown] This room only permits you to add yourself to any queue every %d minutes. Please wait %d minutes and %s seconds before adding yourself again.\n" % (cooldown, rem_min, rem_sec))
+                        return apache.OK        # caught by JS
                 waitdata = query.get('waitdata', '').encode('ascii').strip()
                 if waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
                     req.log_error("Invalid waitdata '" + waitdata + "' when adding " + user + " to queue. \n")
                     return apache.HTTP_BAD_REQUEST
                 addquser(user, waitdata, queue, room)
-                lockAndWriteLog(",".join([str(time()), user, waitdata, room, "add"]))
+                lockAndWriteLog(",".join([str(time()), user, "uadd", room, queue, waitdata]))
+                req.write("success\n")
             elif will_del:
                 delquser(user, queue, room)
-                lockAndWriteLog(",".join([str(time()), user, room, "del"]))
+                lockAndWriteLog(",".join([str(time()), user, "udel", room, queue]))
                 req.write("success\n")
             elif staff_del:
                 # owner is removing someone from the queue
                 delquser(username, queue, room)
-                lockAndWriteLog(",".join([str(time()), user, username, room, "staffdel"]))
+                lockAndWriteLog(",".join([str(time()), user, "usdel", room, queue, username]))
                 req.write("success\n")
             else:
                 req.log_error("Invalid action in querychecked: " + query.get('action', None) + "\n")
@@ -689,7 +753,7 @@ def handler(req):
         except Exception as e:
             req.log_error("Error in querychecked: action %s, station %d for user %s in room %s from %s\r\n" % (action, user, room, ip))
             req.log_error(str(e))
-            return apache.OK
+            return apache.HTTP_BAD_REQUEST
         return apache.OK
     #
     # Otherwise it is waiting for updates
@@ -706,7 +770,7 @@ def handler(req):
         global wm
         wm = pyinotify.WatchManager()
         notifier = pyinotify.Notifier(wm, EventHandler(room), timeout=30*1000)
-        wdd = wm.add_watch(room_db, pyinotify.IN_MODIFY, rec=True)
+        wm.add_watch(room_db, pyinotify.IN_MODIFY, rec=True)
         # start pyinotify
         while True:
             notifier.process_events()
@@ -726,4 +790,5 @@ def handler(req):
         req.content_type = "text/plain"
         req.send_http_header()
         req.write("Invalid request.")
+        req.log_error("Invalid request: " + str(query) + "\n")
         return apache.OK

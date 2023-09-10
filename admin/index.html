@@ -14,18 +14,40 @@
             font-display: swap;
             src: url("../heebo.ttf") format('truetype');
         }
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        input[type="number"] {
+            width: 80px;
+            height: 4vh;
+            background-color: var(--bg-color);
+            border: 1px solid var(--softer-btn-border);
+            color: var(--text-color);
+            font-size: 1.25em;
+            -moz-appearance: textfield;
+        }
+
+        #cooldown {
+            text-align: center;
+        }
+
+        #divcooldown {
+            margin-top: 25px;
+        }
     </style>
-    <title>LabUtils Control Panel</title>
+    <title>QueUp Control Panel</title>
 </head>
 <body>
     <nav>
         <div id="navside1"><p id="time">Date/time here</p></div>
         <div id="navcenter">
-            <p>labutils admin</p>
-            <p style="font-size: calc(0.5vw + 1.25vh);">Section Information Here</p>
+            <p style="font-size: 40px">--room-- Control Panel</p>   <!-- replaced by index.cgi -->
         </div>
         <div id="navside2" style="justify-content: flex-end;">
-            <div>
+            <div id="slider">
                 <span class="switchCylinder" role="img" aria-label="theme_switch" onclick="toggleTheme()">
                     <span class="switchCircle" id="themeSwitchCircle"></span>
                 </span>
@@ -33,64 +55,105 @@
         </div>
     </nav>
     <div class="container" id="topadminpanel">
-        <div class="container adminpanel" style="width: 25%">
+        <div class="container adminpanel" style="min-width: 300px;width: 35%">
             <div style="width: 100%; display: flex; flex-direction: column; align-items: center; max-height: 50%; overflow-y: auto">
-                <p style="margin-bottom: 0; text-align: center; font-size: x-large">Rooms</p>
-		<p style="margin-top: 0; font-size: large">(Click room name to refresh log)</p>
                 <div class="config" id="roomlist" style="justify-content: center; flex-wrap: wrap">
                 </div>
+                <p style="margin-bottom: 0; font-size: large">Click room name to refresh log.</p>
             </div>
             <hr>
-            <div style="width: 100%; display: flex; flex-direction: column; align-items: center">
-                <div class="config" id="options">
-                    <p>Disable room</p>
-                    <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-around;">
-                        <span class="switchCylinder" role="img" aria-label="roomDisabled_switch" onclick="toggleRoomDisabled()">
-                            <span class="switchCircle" id="roomDisabledSwitchCircle"></span>
-                        </span>
-                    </div>
+            <div class="configmain">
+                <div class="config" id="divsubtitle">
+                    <p>Subtitle:</p>
+                    <p id="subtitle">unset</p>
                 </div>
-                <div class="config" id="options">
-                    <p>Permit any student to join queues</p>
-                    <div style="display: flex; flex-direction: row; align-items: center; justify-content: space-around;">
-                        <span class="switchCylinder" role="img" aria-label="anystudent_switch" onclick="toggleAnyStudent()">
-                            <span class="switchCircle" id="anyStudentSwitchCircle"></span>
-                        </span>
-                    </div>
+                <div class="config" id="divlocked">
+                    <p>Room is locked:</p>
+                    <p id="is-locked">False</p>
+                </div>
+                <div class="config" id="divpermanent">
+                    <p>Room is permanent:</p>
+                    <p id="is-permanent">True</p>
+                </div>
+                <div class="config" id="divowners">
+                    <p>Owner list:</p>
+                    <p id="owners"></p>
+                </div>
+                <div class="config" id="divcooldown">
+                    <p>Cooldown period<br>(1-180 min, 0 is disabled):</p>
+                    <input type="number" id="cooldown" cooldown="0" min="0" max="180" value="0">
                 </div>
             </div>
             <hr>
             <div class="config">
-                <button class="config_btn" style="width: 100%; height: 100%" onclick="downloadLog()">Download attendance log</button>
+                <button class="config_btn" style="width: 100%; height: 100%" onclick="downloadLog()">Download full log</button>
             </div>
             <div class="config">
-                <button class="config_btn" style="width: 100%; height: 100%" onclick="clearLog()">Backup and clear attendance log</button>
+                <button class="config_btn" style="width: 100%; height: 100%" onclick="toggleOwnerActions()">Toggle room owner actions on/off</button>
             </div>
         </div>
         <div class="container adminpanel">
-                <p style="text-align: center; font-size: x-large">Attendance Log</p>
+                <p style="text-align: center; margin-bottom: 0; font-size: x-large">Action Log</p>
+                <p style="text-align: center; margin-top: 0; font-size: medium">(refreshes every 30 seconds)</p>
                 <table id="attendance" cellspacing="10px" cellpadding="4vh">
                     <thead>
-                        <tr> <td>Time</td> <td>Student</td> <td>Station</td> <td>Queue</td> <td>🟢 Joined, 🔴 Left</td> </tr>                    </tr>
+                        <tr> <td>Time</td> <td>User</td> <td>Action</td> <td>Queue</td> <td>View all info</td> </tr>                    </tr>
                     </thead>
                     <tbody>
-                        <tr> <td>4/20/2022 00:09:10</td> <td>menon18</td> <td>51</td> <td>checkoff</td> <td>🟢</td> </tr>
-                        <tr> <td>4/20/2022 00:09:10</td> <td>menon18</td> <td>51</td> <td>checkoff</td> <td>🔴</td> </tr>
                     </tbody>
                 </table>
         </div>
     </div>
     <script>
-        try {
-            window.roomdata = ROOMDATAVALUE;
-        }
-        catch(err) {
-            alert("Valid config data was not sent with this page.  " + 
-                  "This usually indicates an error in the room configuration " +
-                  "JSON files.  Please recheck them.")
+        const ACTIONS = {   // action: [ description, fields... ]
+            "rcreate": [ "Created room", "room" ],
+            "rchk": [ "Entered room", "room" ],
+            "rdel": [ "Deleted room", "room" ],
+            "rown": [ "Added owner(s) to room", "room", "new users" ],
+            "rdelown": [ "Deleted owner(s) from room", "room", "old users" ],
+            "rsub": [ "Room subtitle set", "room", "subtitle" ],
+            "runlock": [ "Unlocked room", "room" ],
+            "rlock": [ "Locked room", "room" ],
+            "rcool": [ "Set cooldown period", "room", "cooldown" ],
+            "qadd": [ "Created queue", "room", "queue" ],
+            "qdel": [ "Deleted queue", "room", "queue" ],
+            "qren": [ "Renamed queue", "room", "old queue", "new queue" ],
+            "qclr": [ "Cleared queue", "room", "queue" ],
+            "qmrk": [ "Marked/unmarked on queue", "room", "queue", "username" ],
+            "uadd": [ "Added self to queue", "room", "queue", "identifier" ],
+            "udel": [ "Removed self from queue", "room", "queue" ],
+            "usdel": [ "Staff removed user from queue", "room", "queue", "username" ]
+        };
+        function fetchAndLimit(url) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    var resp = await fetch(url);
+                    if (resp.status == 412) {   // mod_python can't do 429 for some weird reason, so we'll use PRECONDITION_FAILED
+                        alert("You appear to be sending too many requests.  Please slow down.");
+                        reject("Too many requests");
+                    }
+                    if (resp.status == 423) {
+                        alert("This room is currently locked.  Ask the owner of the room (typically a TA or course staff) to unlock it.");
+                        reject("Room locked");
+                    }
+                    else if ((resp.status == 403) || (resp.status == 401)) {
+                        alert("You are not authorized to perform this action.  Unauthorized requests will be logged.");
+                        reject("Unauthorized");
+                    }
+                    else if (resp.status == 500) {
+                        alert("An error occurred on the server.  Please try again.");
+                        reject("Server error");
+                    }
+                    resolve(resp);
+                }
+                catch(err) {
+                    console.log("err", err);
+                    reject(err);
+                }
+            })
         }
         async function clearLog() {
-            var r = await fetch(`admin.py?room=${window.currentRoom}&clearlog=true`);
+            var r = await fetch(`admin.py?room=${window.roomname}&clearlog=true`);
             var t = await r.text();
             if (t == "cleared")
                 alert("Log has been backed up and cleared.");
@@ -110,16 +173,45 @@
                 elm.children[1].innerHTML = `${minute < 1 ? "&lt;1" : minute} min`;
             });
         }
-        function changeRoom(opt=0) { 
-            document.documentElement.setAttribute("roomdisabled", window.roomdata[opt]["disabled"] ? "true" : "false");
-            document.documentElement.setAttribute("anystudent", window.roomdata[opt]["anystudent"] ? "true" : "false");
+        async function toggleOwnerActions() {
+            Array.from(document.querySelectorAll(".owneraction")).forEach(e => {
+                e.style.display = e.style.display == "none" ? "" : "none";
+            });
+        }
+        function blurCooldown() {
+            document.querySelector("#cooldown").value = document.querySelector("#cooldown").getAttribute("cooldown");
+        }
+        async function setCooldown(event) {
+            if (!(event.key == "Enter")) return;
+            try {
+                var cooldown = parseInt(document.getElementById("cooldown").value);
+            }
+            catch(err) {
+                alert("Please enter a number.");
+                return;
+            }
+            if (cooldown < 0) {
+                alert("Cooldown period must be higher than 0.");
+                document.querySelector("#cooldown").value = document.querySelector("#cooldown").getAttribute("cooldown");
+                return;
+            }
+            var r = await fetchAndLimit(`../roomd.py?setup=true&room=${window.roomname}&action=setcool&cooldown=${cooldown}`);
+            if (r.status == 200) {
+                alert("Users will not be able to add themselves to any queue again for " + cooldown + " minutes.");
+                document.querySelector("#cooldown").setAttribute("cooldown", cooldown);
+            }
+            else {
+                alert("An error has occurred.  Please try again. " + r.statusText);
+                document.querySelector("#cooldown").value = document.querySelector("#cooldown").getAttribute("cooldown");
+            }
+        }
+        function refreshRoom() { 
             var selected = document.getElementsByClassName(`config_selected`)[0];
             if (selected) {
                 selected.classList.toggle("config_selected", false);
                 selected.classList.toggle("config_select", true);
             }
-            window.currentRoom = window.roomdata[opt]["room"];
-            var toselect = document.getElementById(`btn_${window.currentRoom}`);
+            var toselect = document.getElementById(`btn_${window.roomname}`);
             toselect.classList.toggle("config_select", false);
             toselect.classList.toggle("config_selected", true);
             // get logs
@@ -129,13 +221,10 @@
                 window.evtSource.close();
             }
             if (typeof(EventSource) !== "undefined") {
-                window.evtSource = new EventSource(`admin.py?sseupdate=true&room=${window.currentRoom}`);
-                window.evtSource.onopen = function() {
-                    document.body.style.opacity = '1';  // does nothing after page load
-                };
+                window.evtSource = new EventSource(`admin.py?sseupdate=true&room=${window.roomname}`);
                 window.evtSource.onmessage = function(event) {
                     var json = JSON.parse(event.data);
-                    console.log(json);
+                    window.roomlog = json;
                     updateRoomLog(json);
                 };
                 window.evtSource.onerror = () => {
@@ -147,32 +236,64 @@
                 }
             } 
             else {
-                alert("This browser does not support Server-Sent Events, which is required to handle queue functionality.  Use a more modern browser like Firefox or Chrome.");
+                alert("This browser does not support Server-Sent Events, which is required to handle room functionality.  Use a more modern browser like Firefox or Chrome.");
             }
         }
         async function updateRoomLog(json=null) {
             var attendance_tbl = document.querySelector("#attendance tbody");
             attendance_tbl.innerHTML = "";
             if (json === null) {
-                var r = await fetch(`admin.py?room=${window.currentRoom}&log=true`);
+                var r = await fetch(`admin.py?room=${window.roomname}&log=true`);
                 json = await r.json();
-                window.currentLog = json;
             }
             json.reverse();
-            json.forEach(evt => {
-                var d = `<td>${new Date(parseFloat(evt[0]*1000)).toLocaleString()}</td>`
-                var jl = `<td>${evt[4] == "1" ? "🟢" : "🔴"}</td>`
-                var s = "<tr>" + d + evt.slice(1, -1).map(prop => `<td>${prop}</td>`).join("") + jl + "</tr>";
-                attendance_tbl.innerHTML += s;
+            json.forEach(a => {
+                var row = document.createElement("tr");
+                var time = document.createElement("td");
+                var user = document.createElement("td");
+                var action = document.createElement("td");
+                var queue = document.createElement("td");
+                var misc = document.createElement("td");
+                time.innerHTML = new Date(parseFloat(a[0]) * 1000).toLocaleString();
+                user.innerHTML = a[1];
+                if (window.roomdata.owners.includes(a[1])) {
+                    row.classList.add("owneraction");
+                }
+                action.innerHTML = ACTIONS[a[2]][0];
+                if (a[2].startsWith("q") || a[2].startsWith("u")) {
+                    queue.innerHTML = a[4];
+                }
+                else {
+                    queue.innerHTML = "n/a";
+                }
+                misc.innerHTML = "ℹ️";
+                misc.style.cursor = "pointer";
+                misc.addEventListener("click", () => {
+                    // show what remaining keys there are for this action
+                    var keys = ACTIONS[a[2]].slice(1);
+                    var values = a.slice(3);
+                    var msg = "";
+                    for (var i = 0; i < keys.length; i++) {
+                        msg += `${keys[i]}: ${values[i]}\n`;
+                    }
+                    alert(msg);
+                });
+                row.appendChild(time);
+                row.appendChild(user);
+                row.appendChild(action);
+                row.appendChild(queue);
+                row.appendChild(misc);
+                attendance_tbl.appendChild(row);
             });
         }
         async function downloadLog() {
-            var r = await fetch(`admin.py?room=${window.currentRoom}&fulllog=true`);
+            var r = await fetch(`admin.py?room=${window.roomname}&fulllog=true`);
             json = await r.json();
-            var data = json.map(r => r.join(",")).join("\n");
-            var blob = new Blob(["UNIX Time,Student,Station,Queue,Added(1)/Removed(0)\n", data], {type: "text/csv"});
+            json.reverse();
+            var data = json.map(r => new Date(parseFloat(r[0]) * 1000).toLocaleString().replace(", ", "-") + "," + r.slice(1,3) + "," + r.slice(4).join(",")).join("\n");
+            var blob = new Blob(["Date/Time,User,Action,Queue,Other\n", data], {type: "text/csv"});
             var dlink = document.createElement('a');
-            dlink.download = `attendance_${window.currentRoom}.csv`;
+            dlink.download = `actionlog_${window.roomname}.csv`;
             dlink.href = window.URL.createObjectURL(blob);
             // http://stackoverflow.com/questions/8310657/ddg#35251739
             dlink.onclick = function(e) {
@@ -190,11 +311,31 @@
         }
         window.onload = async () => {
             clock();
-            window.roomdata.forEach((room_o, i) => {
-                var btn = `<button class="config_btn config_select" onclick="changeRoom(${i})" id="btn_${room_o["room"]}">${room_o["room"]}</button>`;
-                document.getElementById("roomlist").innerHTML += btn;
-            });
-            changeRoom(0);
+            window.username = "--username--";   // replaced by index.cgi
+            if (!localStorage.darkmode) {
+                localStorage.darkmode = "false";
+            }
+            if (localStorage.darkmode == "true") {
+                document.documentElement.setAttribute("theme", "dark");
+            }
+            else {
+                document.documentElement.setAttribute("theme", "light");
+            }
+            window.roomname = "--room--";   // replaced by index.cgi
+            var response = await fetchAndLimit('../roomd.py?setup=true&action=chk&admin=true&room=' + window.roomname);
+            if (response.status != 200) {
+                alert("An error occurred while fetching room data.  Please refresh.");
+                return;
+            }
+            window.roomdata = await response.json();
+            document.getElementById("subtitle").innerHTML = window.roomdata.subtitle == "" ? "unset" : window.roomdata.subtitle;
+            document.getElementById("is-locked").innerHTML = window.roomdata["is-locked"] ? "True" : "False";
+            document.getElementById("is-permanent").innerHTML = window.roomdata["is-permanent"] ? "True" : "False";
+            document.getElementById("owners").innerHTML = window.roomdata["owners"];
+            document.getElementById("cooldown").value = window.roomdata["cooldown"];
+            document.getElementById("cooldown").setAttribute("cooldown", window.roomdata["cooldown"]);
+            document.getElementById("roomlist").innerHTML = `<button class="config_btn config_select" onclick="refreshRoom()" id="btn_${window.roomname}">${window.roomname}</button>`;
+            refreshRoom();
         }
         function clock() {
             function IntTwoChars(i) {
@@ -208,43 +349,11 @@
             var mode = document.documentElement.getAttribute("theme") || "";
             if (mode == "light") {
                 document.documentElement.setAttribute("theme", "dark");
+                localStorage.darkmode = "true";
             } else {
                 document.documentElement.setAttribute("theme", "light");
+                localStorage.darkmode = "false";
             }
-        }
-        function toggleAnyStudent() {
-            var mode = document.documentElement.getAttribute("anystudent") || "";
-            var room = document.getElementsByClassName("config_selected")[0].innerHTML;
-            // send {"anystudent": "false", "room": "roomname"}
-            fetch(`admin.py?room=${room}&anystudent=${mode == "true" ? "false" : "true"}`)
-            .then(r => r.text()).then(t => {
-                if (t != "success") alert(t);
-                else {
-                    console.log(t, mode == "true" ? "false" : "true");
-                    // wait on response before toggling
-                    document.documentElement.setAttribute("anystudent", mode == "true" ? "false" : "true");
-                    window.roomdata.filter(e => e.room == room)[0]["anystudent"] = mode == "true" ? false : true;
-                }
-            }).catch(e => {
-                alert(`Unable to set attribute anystudent for ${room}: ` + e.toString());
-            });
-        }
-        function toggleRoomDisabled() {
-            var mode = document.documentElement.getAttribute("roomdisabled") || "";
-            var room = document.getElementsByClassName("config_selected")[0].innerHTML;
-            // send {"roomdisabled": "false", "room": "roomname"}
-            fetch(`admin.py?room=${room}&roomdisabled=${mode == "true" ? "false" : "true"}`)
-            .then(r => r.text()).then(t => {
-                if (t != "success") alert(t);
-                else {
-                    console.log(t, mode == "true" ? "false" : "true");
-                    // wait on response before toggling
-                    document.documentElement.setAttribute("roomdisabled", mode == "true" ? "false" : "true");
-                    window.roomdata.filter(e => e.room == room)[0]["disabled"] = mode == "true" ? false : true;
-                }
-            }).catch(e => {
-                alert(`Unable to set attribute roomdisabled for ${room}: ` + e.toString());
-            });
         }
         function recurseTimer() {
             var now = Date.now();
@@ -321,7 +430,9 @@
                 event.currentTarget.blur();
             }
         }
+        document.querySelector("#cooldown").addEventListener('keydown', setCooldown);
+        document.querySelector("#cooldown").addEventListener('blur', blurCooldown);
     </script>
 </body>
-<!-- Designed and deployed by Niraj Menon, 2022. -->
+<!-- Designed and deployed by Niraj Menon, 2023. -->
 </html>
