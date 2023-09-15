@@ -660,6 +660,10 @@ def handler(req):
                     lockAndWriteLog(",".join([str(time()), user, "qadd", room, queue]))
                     req.write(json.dumps(getusers("", room)))
                 elif will_del:
+                    # queue cannot be the only queue in the room!
+                    if len(getqueues(room)) == 1:
+                        req.log_error("Cannot delete the only queue in a room. Query was %s\r\n" % query)
+                        return apache.HTTP_BAD_REQUEST
                     deletequeue(queue, room)
                     lockAndWriteLog(",".join([str(time()), user, "qdel", room, queue]))
                 elif will_ren:
@@ -723,9 +727,9 @@ def handler(req):
                 if cooldown > 0:
                     lastadd = getlastadd(room, user)
                     if (time() - lastadd) < (cooldown * 60):
-                        req.log_error("User %s is adding themselves to room %s too often. Query was %s\r\n" % (user, room, query))
                         rem_min = int(cooldown - (time() - lastadd) / 60)
                         rem_sec = int((cooldown - (time() - lastadd) / 60) % 1 * 60)
+                        req.log_error("User %s is adding themselves to room %s too often. %sm, %ss remaining" % (user, room, str(rem_min), str(rem_sec)))
                         req.write("[cooldown] This room only permits you to add yourself to any queue every %d minutes. Please wait %d minutes and %s seconds before adding yourself again.\n" % (cooldown, rem_min, rem_sec))
                         return apache.OK        # caught by JS
                 waitdata = query.get('waitdata', '').encode('ascii').strip()
@@ -751,7 +755,7 @@ def handler(req):
             req.log_error("IntegrityError: Error adding/removing station %d for user %s in room %s from %s\r\n" % (user, room, ip))
             return apache.HTTP_INTERNAL_SERVER_ERROR
         except Exception as e:
-            req.log_error("Error in querychecked: action %s, station %d for user %s in room %s from %s\r\n" % (action, user, room, ip))
+            req.log_error("Error in querychecked: action %s, user %s in room %s from %s\r\n" % (action, user, room, ip))
             req.log_error(str(e))
             return apache.HTTP_BAD_REQUEST
         return apache.OK

@@ -568,12 +568,31 @@
             event.preventDefault();
             var curTarget = event.currentTarget;
             curTarget.innerHTML = curTarget.innerHTML.replace(" ", "");
+            curTarget.innerHTML = curTarget.innerHTML.replace("<br>", "");
             curTarget.blur();
             // name was not changed.
             if (curTarget.innerHTML == curTarget.getAttribute("queue")) {
                 return;
             }
-            if (!/^[a-zA-Z0-9\_]{3,15}$/.test(curTarget.innerHTML)) {
+            if (curTarget.innerHTML == "") {
+                var r = confirm("Setting the queue name to an empty string/only spaces will delete the queue.  Are you sure you want to continue?");
+                if (!r) {
+                    curTarget.innerHTML = curTarget.getAttribute("queue");
+                    return;    
+                }
+                var r = await fetchAndLimit(`roomd.py/?setup=true&action=del&room=${window.roomname}&queue=${curTarget.getAttribute("queue")}`);
+                if (r.status != 200) {
+                    alert("An error occurred while deleting the queue.  Please try again.");
+                    alert(await r.text());
+                    curTarget.innerHTML = curTarget.getAttribute("queue");
+                    return;
+                }
+                else {
+                    curTarget.parentNode.remove();
+                }
+                return;     // do not do a rename after this.
+            }
+            else if (!/^[a-zA-Z0-9\_]{3,15}$/.test(curTarget.innerHTML)) {
                 alert("Queue name must be alphanumeric with optional underscores, be more than 3 characters and less than 16 characters long.");
                 curTarget.innerHTML = curTarget.getAttribute("queue");
                 return;
