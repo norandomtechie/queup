@@ -14,6 +14,8 @@ The QueUp system is designed to give Purdue ECE students and staff the ability t
 ### Adding a queue
 The large "Add Queue" button at the bottom of the page will let you add a queue.  Click that, specify a name, and confirm.
 
+[addqueue.webm](https://github.com/ece270/queup/assets/12859429/cd5ced67-b3cf-4680-b8ff-520642f65aca)
+
 ### Renaming a queue
 You can rename the "default-queue" to whatever you wish (checkoff, help, aisle1, etc.), as well as add new queues with their own names as well.  Click the name of the queue to rename it (which will add a cursor to the text box).  
 
@@ -21,8 +23,6 @@ You can rename the "default-queue" to whatever you wish (checkoff, help, aisle1,
 
 ### Deleting a queue
 Renaming the queue to an empty string will delete the queue, after asking you to confirm.  You will not be able to delete a queue if it's the only queue in the room - add a second queue before you delete the first one, if you must.
-
-[addqueue.webm](https://github.com/ece270/queup/assets/12859429/cd5ced67-b3cf-4680-b8ff-520642f65aca)
 
 ## Owners
 
