@@ -34,17 +34,42 @@
                     <button class="btn" id="closeroom" onclick="closeRoom()">Close room</button>
                     <button class="btn" id="addroomowners" onclick="modRoomOwners('add')">Add room owners</button>
                     <button class="btn" id="delroomowners" onclick="modRoomOwners('del')">Delete room owners</button>
-                    <button class="btn" id="toggleroomlock" onclick="toggleRoomLock('del')">Lock Room</button>
+                    <button class="btn" id="toggleroomlock" onclick="toggleRoomLock('del')">Lock room</button>
                     <button class="btn" id="adminpanel" onclick="window.open('admin?room='+window.roomname, '_blank');">View control panel</button>
+                    <button class="btn" id="adminpanel" onclick="toggleTimerView()">Toggle exam timer</button>
                     <p id="roomstatus">Room status: --roomstatus--</p>
                 </div>
             </div>
         </div>
     </nav>
-    <div class="container" id="rooms">
-        <div id="queueadddiv" class="roomtop" onclick="createQueue()">
-            <div id="queueadd" class="queue">
-                <p>Add queue</p>
+    <div id="utils">
+        <div class="container" id="rooms">
+            <div id="queueadddiv" class="roomtop" onclick="createQueue()">
+                <div id="queueadd" class="queue">
+                    <p>Add queue</p>
+                </div>
+            </div>
+        </div>
+        <div class="container" id="timer">
+            <div id="innertimer">
+                <h3 id="timertext" contenteditable onblur="checkTime(event)" onkeydown="checkTime(event)">2:00:00</h3>
+                <div class="row">
+                    <button id="stopstart" onclick="toggleTimer(event)">▶</button>
+                    <button id="resettimer" onclick="resetTimer()">
+                        <!-- https://www.flaticon.com/free-icon/refresh_126561?term=repeat&page=1&position=4&page=1&position=4&related_id=126561&origin=tag -->
+                        <svg width="50%" height="50%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+                            viewBox="0 0 489.935 489.935" xml:space="preserve">
+                        <g>
+                            <path d="M278.235,33.267c-116.7,0-211.6,95-211.6,211.7v0.7l-41.9-63.1c-4.1-6.2-12.5-7.9-18.7-3.8c-6.2,4.1-7.9,12.5-3.8,18.7
+                                l60.8,91.5c2.2,3.3,5.7,5.4,9.6,5.9c0.6,0.1,1.1,0.1,1.7,0.1c3.3,0,6.5-1.2,9-3.5l84.5-76.1c5.5-5,6-13.5,1-19.1
+                                c-5-5.5-13.5-6-19.1-1l-56.1,50.7v-1c0-101.9,82.8-184.7,184.6-184.7s184.7,82.8,184.7,184.7s-82.8,184.7-184.6,184.7
+                                c-49.3,0-95.7-19.2-130.5-54.1c-5.3-5.3-13.8-5.3-19.1,0c-5.3,5.3-5.3,13.8,0,19.1c40,40,93.1,62,149.6,62
+                                c116.6,0,211.6-94.9,211.6-211.7S394.935,33.267,278.235,33.267z" stroke-width="0.5" fill="var(--text-color)">
+                        </g>
+                        </svg>
+                    </button>
+                </div>
+                <svg width="100%" height="100%" viewbox="0 0 100 100" id="innertimer-border"><circle cy="50" fill="transparent" cx="50" r="49" stroke-width="0.5" stroke="var(--softer-btn-border)"></circle></svg>
             </div>
         </div>
     </div>
@@ -454,16 +479,53 @@
         }
         function applyTimeData(q, roomdata) {
             var list = Array.from(document.querySelector(`#queue${q}`).children);
-            roomdata.forEach(a => {
-                var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
-                var now = Date.now();
-                var then = new Date(parseFloat(a[1])*1000);
-                var minute = parseInt((now - then) / (60 * 1000));
-                var max = 5;
-                var maxopacity = 0.7;
-                elm.style["background-color"] = `var(--waiter-bg-${minute <= max ? minute : max})`;
-                elm.querySelector('.time_text').innerHTML = `${minute < 1 ? "&lt;1" : minute} min`;
-            });
+            if (['GLX8Q'].includes(window.roomname)) {
+                roomdata.forEach(a => {
+                    var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
+                    var now = Date.now();
+                    var then = new Date(parseFloat(a[1])*1000);
+                    var minute = parseInt((now - then) / (60 * 1000));
+                    var maxopacity = 0.7;
+                    elm.classList.toggle('waiter-bg-max', false);
+                    if (minute <= 10) {
+                        elm.style["background-color"] = `var(--waiter-bg-0)`;
+                    }
+                    else if (minute > 10 && minute <= 20) {
+                        elm.style["background-color"] = `var(--waiter-bg-1)`;
+                    }
+                    else if (minute > 20 && minute <= 30) {
+                        elm.style["background-color"] = `var(--waiter-bg-2)`;
+                    }
+                    else if (minute > 30 && minute <= 45) {
+                        elm.style["background-color"] = `var(--waiter-bg-3)`;
+                    }
+                    else if (minute > 45 && minute <= 60) {
+                        elm.style["background-color"] = `var(--waiter-bg-4)`;
+                    }
+                    else if (minute > 60 && minute <= 1000) {
+                        elm.style["background-color"] = `var(--waiter-bg-5)`;
+                    }
+                    else {
+                        elm.classList.toggle('waiter-bg-max', true);
+                        elm.style["background-color"] = `var(--waiter-bg-max)`;
+                        elm.style["color"] = 'var(--waiter-bg-text-max)';
+                    }
+                    elm.querySelector('.time_text').innerHTML = `${minute < 1 ? "&lt;1" : minute} min`;
+                });
+            }
+            else {
+                roomdata.forEach(a => {
+                    var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
+                    var now = Date.now();
+                    var then = new Date(parseFloat(a[1])*1000);
+                    var minute = parseInt((now - then) / (60 * 1000));
+                    var max = 5;
+                    var maxopacity = 0.7;
+                    elm.style["background-color"] = `var(--waiter-bg-${minute <= max ? minute : max})`;
+                    elm.querySelector('.time_text').innerHTML = `${minute < 1 ? "&lt;1" : minute} min`;
+                });
+            }
+
         }
         window.onbeforeunload = () => {
             window.disableErrors = true;
@@ -900,6 +962,119 @@
         document.querySelector("#genroom").addEventListener('click', generateRandomRoomName);
         if (localStorage.lastjoinedroom) {
             document.getElementById("joinroom").value = localStorage.lastjoinedroom;
+        }
+
+        ///////////////////////////////////////////////////////////////
+        // Mar 24 2025 - added a timer function for lab practicals
+        function toggleTimerView() {
+            var timerdiv = document.querySelector("#timer");
+            if (timerdiv.style.display == "") {
+                timerdiv.style.display = "flex";
+            }
+            else {
+                timerdiv.style.display = "";
+            }
+        }
+        function recurseTimer() {
+            var now = Date.now();
+            if (window.timerStopped) return;
+            if (window.timerRunning == false) {
+                window.lastSavedTimestamp = now;
+                return;
+            }
+            // if timer is starting up
+            if (window.timerStart === undefined)
+                window.timerStart = now;
+            if (window.lastSavedTimestamp !== undefined) {
+                window.timerStart += (now - window.lastSavedTimestamp);
+                delete window.lastSavedTimestamp;
+            }
+            else if (window.lastTimestamp === undefined)
+                window.lastTimestamp = now;
+            var elapsed = now - window.lastTimestamp;
+            // if timer is done
+            if ((now - window.timerStart) > window.timerLength) {
+                changeTimer(0);
+                setTimeout(() => {
+                    resetTimer();
+                }, 1000);
+                return;
+            }
+            // otherwise wait (1 second - diff in time from start) to self-correct time
+            else {
+                now = Date.now()
+                var curSecond = parseInt((now - window.timerStart) / 1000);
+                var nextSecond = curSecond + 1;
+                changeTimer(window.timerLength - (curSecond * 1000))
+                window.lastTimestamp = now;
+                setTimeout(recurseTimer, (nextSecond * 1000) - (now - window.timerStart));
+                // setTimeout(recurseTimer, 1000);
+            }
+        }
+        // thanks to Matt for saving my time
+        // https://stackoverflow.com/questions/21294302/converting-milliseconds-to-minutes-and-seconds-with-javascript
+        function msToTime(time) {
+            var d = new Date (1000 * Math.round (time/1000));
+            function pad(i) { return ('0'+i).slice(-2); }
+            return d.getUTCHours() + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+        }
+        function changeTimer(time) {
+            document.querySelector("#timertext").innerHTML = msToTime(time);
+        }
+        window.timerLength = 120 * 60 * 1000;
+        function toggleTimer(event) {
+            var border = event.currentTarget.parentNode.parentNode.querySelector('#innertimer-border');
+            if (event.currentTarget.innerHTML == "▶") {
+                border.classList.add('innertimer-border-active');
+                event.currentTarget.innerHTML = "⏸";
+                window.timerRunning = true;
+                window.timerStopped = false;
+                recurseTimer();
+            }
+            else if (event.currentTarget.innerHTML == "⏸") {
+                border.classList.remove('innertimer-border-active');
+                window.timerRunning = false;
+                event.currentTarget.innerHTML = "▶";
+            }
+        }
+        function resetTimer() {
+            var border = document.querySelector('#innertimer-border');
+            border.classList.remove('innertimer-border-active');
+            window.timerStopped = true;
+            window.timerRunning = false;
+            document.querySelector('#stopstart').innerHTML = "▶";
+            document.querySelector("#timertext").innerHTML = msToTime(window.timerLength);
+            delete window.timerStart;
+            delete window.lastSavedTimestamp;
+            delete window.lastTimestamp;
+        }
+        function checkTime(event) {
+            if (event.key == "Enter" || event.type == "blur") {
+                event.currentTarget.innerHTML = event.currentTarget.innerHTML.replace(" ", "");
+                if (event.currentTarget.innerHTML.match(/^(?:([0-9]+):)?(?:([0-9]+):)?([0-9]+)$/)) {
+                    var hms = event.currentTarget.innerHTML.match(/^(?:([0-9]+):)(?:([0-9]+):)([0-9]+)$/);
+                    var ms = event.currentTarget.innerHTML.match(/^(?:([0-9]+):)([0-9]+)$/);
+                    var s = event.currentTarget.innerHTML.match(/^([0-9]+)$/);
+                    if (hms) {
+                        var hrs = hms[1]; var min = hms[2]; var sec = hms[3];
+                        window.timerLength = (hrs * 60 * 60 * 1000) + (min * 60 * 1000) + (sec * 1000);
+                    }
+                    else if (ms) {
+                        var min = ms[1]; var sec = ms[2];
+                        window.timerLength = (min * 60 * 1000) + (sec * 1000);
+                    }
+                    else if (s) {
+                        var sec = s[1];
+                        window.timerLength = sec * 1000;
+                    }
+                }
+                else {
+                    event.currentTarget.innerHTML = "2:00:00";
+                    window.timerLength = 120 * 60 * 1000;
+                }
+                resetTimer();
+                event.currentTarget.blur();
+            }
         }
     </script>
 </body>

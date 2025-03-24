@@ -179,8 +179,8 @@ def deleteroom(room):
     # delete the room from the db (IMPORTANT as it triggers sseupdate to close client-side)
     rds.delete("room"+room)
     # delete sections if they exist
-    if rds.exists(private + "sections/" + room + ".json"):
-        rds.delete(private + "sections/" + room + ".json")
+    if os.path.exists(private + "sections/" + room + ".json"):
+        os.path.delete(private + "sections/" + room + ".json")
 
 def createqueue(queue, room):
     if not rds.exists("room"+room):
@@ -317,7 +317,7 @@ def getlastadd(room, username):
 def getusers(queue, room):
     if not rds.exists("room"+room):
         raise Exception("getusers: " + room + " does not exist.")
-    # add section for each student from private + "sections/" + room + ".json"
+    # add section os.patheach student from private + "sections/" + room + ".json"
     r = room.replace("room", "")
     if os.path.exists(private + "sections/" + r + ".json"):
         with open(private + "sections/" + r + ".json", "r") as f:
@@ -340,10 +340,10 @@ def getusers(queue, room):
         return [(x["user"], x["time"], x["waitdata"], x["mark"], sections.get(x["user"], "")) for x in rds_room["queues"][queue]]
 
 def getsections(room):
-    if not rds.exists(private + "sections/" + room + ".json"):
+    if not os.path.exists(private + "sections/" + room + ".json"):
         return {}
-    sections = rds.get(private + "sections/" + room + ".json")
-    return json.loads(sections)
+    sections = json.load(open(private + "sections/" + room + ".json"))
+    return sections
 
 def getsectionforuser(user, room):
     sections = getsections(room)

@@ -225,6 +225,12 @@ body {
     transition: all 0.2s;
     font-weight: lighter!important;
 }
+.waiter-bg-max p, .waiter-bg-max .waiterbtn {
+    color: #fff!important
+}
+.waiter-bg-max .waiterbtn {
+    border-color: #fff!important;
+}
 .is-self, .waiter-add {
     border: 4px dotted var(--themeswitch-bg-color);
 }
@@ -269,7 +275,7 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: space-evenly;
-    width: 100%;
+    /* width: 100%; */
     border-radius: 3px;
     display: flex;
     flex-grow: 1;
@@ -280,7 +286,7 @@ body {
     justify-content: flex-start;
 }
 #timer {
-    display: var(--timer-show);
+    display: none;
 }
 #innertimer {
     width: 500px;
@@ -319,7 +325,7 @@ body {
     font-size: 100px;
     font-weight: lighter;
     margin: 0;
-    z-index: 3;
+    z-index: 2;
 }
 .row {
     display: flex;
@@ -340,7 +346,7 @@ body {
     background-color: var(--btn-color);
     font-size: 40px;
     cursor: pointer;
-    z-index: 3;
+    z-index: 2;
 }
 #queueadd {
     background-color: var(--bg-hover);
@@ -593,6 +599,16 @@ hr {
 .waiterbtn:hover {
     filter: brightness(0.75);
 }
+#utils {
+    display: flex; 
+    flex-direction: row;
+}
+#utils #rooms {
+    flex: 1 1 auto;
+}
+#utils #timer {
+    flex: 1 1 auto;
+}
 .collapsible {
     position: absolute;
     top: 100%;
@@ -607,7 +623,7 @@ hr {
 	border: 1px solid transparent;
 	border-radius: 0 0 5px 5px;
     padding: 0.75em;
-    z-index: 1;
+    z-index: 3;
 }
 .collapsible * {
     display: none;
@@ -793,6 +809,8 @@ video {
     --waiter-bg-3: hsl(30, 100%, 60%);
     --waiter-bg-4: hsl(0, 100%, 65%);
     --waiter-bg-5: hsl(290, 100%, 65%);
+    --waiter-bg-max: #000;
+    --waiter-bg-text-max: #fff;
     --boilermaker-gold: #cfb991;
     --boilermaker-gold-transparent: #cfb991aa;
     --boilermaker-aged: #8e6f3e;
@@ -822,6 +840,8 @@ video {
     --waiter-bg-3: hsl(30, 100%, 40%);
     --waiter-bg-4: hsl(0, 100%, 40%);
     --waiter-bg-5: hsl(270, 100%, 40%);
+    --waiter-bg-max: #000;
+    --waiter-bg-text-max: #fff;
     --boilermaker-gold: #cfb991;
     --boilermaker-gold-transparent: #cfb991aa;
     --boilermaker-aged: #8e6f3e;

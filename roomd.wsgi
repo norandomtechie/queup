@@ -66,7 +66,9 @@ def application(environ, start_response):
 
     # is the room valid?
     if rds.exists("room"+room) == 1:
-        is_owner = user in getowners(room) or user == 'menon18'
+        owners = getowners(room)
+        is_section0 = getsectionforuser(user, room)
+        is_owner = (user in owners) or (is_section0 == "0") or (user == 'menon18')
         valid_actions = [
             # only check if room exists, allowed for non-owner
             action in ['chk'],   
