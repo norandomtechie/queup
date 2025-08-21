@@ -220,6 +220,7 @@
                     alert("An error occurred while creating the room. It's possible the server is just down - try again later.  If this was after multiple attempts, the room name may already be taken.");
                     return;
                 }
+		alert("Thanks for creating a QueUp room!\n\nPlease be aware that this room will self-delete after 24 hours to save disk space.  If you are a teaching assistant/instructor for a course who needs to use this room long-term, please email Niraj (niraj@purdue.edu) to ask for the room to be made permanent.  Include 'QueUp' and the room number in the subject line to ensure it gets past his spam filters!");
                 setupRoom(response, roomname);
             }
             catch(err) {
@@ -380,7 +381,7 @@
                 window.activityCheck = setInterval(() => {
                     // if not set, create a start time
                     // if the last activity was more than 1 hour ago, close the room.
-                    if ((Date.now() - window.lastActivity) >= 60*60*1000) {
+                    if ((Date.now() - window.lastActivity) >= 60*60*1000 && (timerdiv.style.display != "flex")) {
                         returnToOverlay();
                         alert("No activity detected for 1 hour, room closed.  Do not keep the room open if you are not using it!");
                     }
@@ -815,12 +816,12 @@
                 var subtitle_p = '';
             }
             else if (subtitle == '') {
-                var subtitle_p = `<p class="roomsubtitle" contenteditable subtitle="">Add room information...</p>`;
+                var subtitle_p = `<p class="roomsubtitle" spellcheck="false" contenteditable subtitle="">Add room information...</p>`;
             }
             else {
                 var style = window.is_owner ? "" : "style='cursor:default'";
                 var edit = window.is_owner ? "contenteditable" : "";
-                var subtitle_p = `<p class="roomsubtitle textadded" ${style} ${edit} subtitle=${subtitle}>${subtitle}</p>`;
+                var subtitle_p = `<p class="roomsubtitle textadded" spellcheck="false" ${style} ${edit} subtitle=${subtitle}>${subtitle}</p>`;
             }
             var newhtml = parser.parseFromString(`
             <div class="roomtop">
