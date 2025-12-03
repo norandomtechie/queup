@@ -128,7 +128,7 @@
                 alert("You are still in the room.  Please remove yourself from any queues before leaving.");
                 return;
             }
-            var c = confirm("Are you sure you want to close the room?  This irreversibly removes all students (if any) and deletes the room itself.");
+            var c = confirm("Are you sure you want to close the room?  This irreversibly removes all students (if any) and deletes the room itself, and will not be accessible until you create it again.");
             if (!c) return;
             try {
                 if (!window.is_owner) {
