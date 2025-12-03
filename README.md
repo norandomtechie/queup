@@ -1,6 +1,8 @@
 # QueUp
 The QueUp system is designed to give Purdue ECE students and staff the ability to quickly create a queuing room, capable of handling multiple queues, and to be able to customize it to fit your class needs.
 
+If you are looking for the QueUp website, it is [here](https://bit.ly/ece-queup).
+
 ## Quick Start
 - Generate a room code by clicking the 🔁 button.  (Room codes can only be 5 alphanumeric characters.)  Click "Create".
 - To join a queue, click the "+" button for a specific queue.  To leave a queue, click the button with your username on it.
