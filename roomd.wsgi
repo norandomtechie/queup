@@ -16,7 +16,7 @@ private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 
 sys.path.append(os.environ['PWD'] + '/queup')
 from lib.lock import *
-from lib.methods import *
+from lib.methods_dec3 import *
 from lib.ratelimiter import *
 from lib.wsgidefs import *
 
@@ -56,7 +56,9 @@ def application(environ, start_response):
         return ret_400(start_response, "Invalid room name " + room)
     
     action = query.get('action', '')
-    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q']
+    ### CHANGED: Added 'timer' and 'broadcast' to allowed actions
+    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast']
+    ### END CHANGED
     if 'sseupdate' not in query and not (action in actions):
         return ret_400(start_response, "Invalid action " + action)
     setup = query.get('setup', '')
@@ -83,7 +85,8 @@ def application(environ, start_response):
     # or, are we creating a room?
     elif roomsetup and action == 'add': 
         is_owner = True
-    # so no db exists, and we're not creating one. what on earth are you doing?
+    # so no db exists, and we're not creating one.
+    # what on earth are you doing?
     else:
         return ret_400(start_response, "Malformed request, no room " + room)
     
@@ -95,6 +98,11 @@ def application(environ, start_response):
 
     # set section
     section = getsectionforuser(user, room)
+    
+    ### ADDED: Logic variables for new features
+    will_timer = action == 'timer' and "room"+room in rooms
+    will_broadcast = action == 'broadcast' and "room"+room in rooms
+    ### END ADDED
 
     # this section handles adding and removing in a room
     if roomsetup:
@@ -148,6 +156,28 @@ def application(environ, start_response):
             if "admin" not in query or not is_owner:
                 lockAndWriteLog(room, ",".join([str(time()), user, "rchk", room]))
             return ret_json(start_response, json.dumps(userdata))
+        ### ADDED: New handlers for Timer and Broadcast
+        elif will_timer:
+            if not is_owner: return ret_401(start_response, "Unauthorized")
+            op = query.get('op', '')
+            duration = query.get('duration', None)
+            try:
+                updatetimer(room, op, duration)
+                lockAndWriteLog(room, ",".join([str(time()), user, "rtimer", room, op]))
+                return ret_ok(start_response, "success")
+            except Exception as e:
+                return ret_400(start_response, str(e))
+                
+        elif will_broadcast:
+            if not is_owner: return ret_401(start_response, "Unauthorized")
+            msg = query.get('message', '')
+            try:
+                sendbroadcast(room, user, msg)
+                lockAndWriteLog(room, ",".join([str(time()), user, "rbcast", room]))
+                return ret_ok(start_response, "success")
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        ### END ADDED
         else:
             if not is_owner:
                 return ret_401(start_response, "User is not an owner of room.")

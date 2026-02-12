@@ -24,7 +24,6 @@
             <div id="collapse" class="collapsible-in-overlay">
                 <div style='display: flex; flex-direction: row; align-items: center'>
                     <a target="_blank" href="https://github.com/norandomtechie/queup/" style="text-decoration-line: none;">
-                        <!-- <p id="help" class="">❓</p> -->
                         <img id="help" src="ghw.png">
                     </a>
                     <p id="gear" class="">⚙️</p>
@@ -37,6 +36,7 @@
                     <button class="btn" id="toggleroomlock" onclick="toggleRoomLock('del')">Lock room</button>
                     <button class="btn" id="adminpanel" onclick="window.open('admin?room='+window.roomname, '_blank');">View control panel</button>
                     <button class="btn" id="adminpanel" onclick="toggleTimerView()">Toggle exam timer</button>
+                    <button class="btn hide-if-not-owner" id="broadcastbtn" onclick="sendBroadcast()">Broadcast Message</button>
                     <p id="roomstatus">Room status: --roomstatus--</p>
                 </div>
             </div>
@@ -56,7 +56,6 @@
                 <div class="row">
                     <button id="stopstart" onclick="toggleTimer(event)">▶</button>
                     <button id="resettimer" onclick="resetTimer()">
-                        <!-- https://www.flaticon.com/free-icon/refresh_126561?term=repeat&page=1&position=4&page=1&position=4&related_id=126561&origin=tag -->
                         <svg width="50%" height="50%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
                             viewBox="0 0 489.935 489.935" xml:space="preserve">
                         <g>
@@ -69,7 +68,11 @@
                         </svg>
                     </button>
                 </div>
+                <p id="timerstatus" style="font-size: 14px; opacity: 0.7; display: none">Synced with room</p>
                 <svg width="100%" height="100%" viewbox="0 0 100 100" id="innertimer-border"><circle cy="50" fill="transparent" cx="50" r="49" stroke-width="0.5" stroke="var(--softer-btn-border)"></circle></svg>
+            </div>
+            <div class="row" style="margin-top: 20px;position: relative;top: 300px;">
+                <button id="synctimerbtn" class="btn" style="font-size: 16px; width: auto;" onclick="toggleTimerSync()">Enable timer sync</button>
             </div>
         </div>
     </div>
@@ -260,6 +263,11 @@
                 alert("An error occurred while parsing the response from the server.  Response was: \n" + j);
                 return;
             }
+            
+            // ### CHANGED: Set firstRun flag to true to silence initial broadcast
+            window.firstRun = true;
+            // ### END CHANGED
+
             window.is_owner = json["is-owner"];
             window.section = json["section"];
             var roomsubtitle = (json["subtitle"] === null) ? "" : json["subtitle"];
@@ -273,6 +281,10 @@
             document.getElementById("toggleroomlock").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("adminpanel").classList.toggle("hide-if-not-owner", !window.is_owner);
             document.getElementById("roomstatus").classList.toggle("hide-if-not-owner", !window.is_owner);
+            
+            document.getElementById("broadcastbtn").classList.toggle("hide-if-not-owner", !window.is_owner);
+            document.getElementById("synctimerbtn").classList.toggle("hide-if-not-owner", !window.is_owner);
+
             // very hacky way to duplicate element while getting rid of event listeners.
             if (window.is_owner) {
                 // not a redundant statement!!! this is to ensure that the event listener is removed.
@@ -392,10 +404,39 @@
             }
         }
         function genRoom(r, json) {
+            // ### CHANGED: Updated Broadcast logic to use firstRun
+            if (json.meta) {
+                // Broadcast
+                var bcast = json.meta.broadcast;
+                if (bcast && bcast.id !== "") {
+                    // If this is the first run (e.g., joining a room), we silently acknowledge 
+                    // the current state so we don't alert old messages.
+                    if (window.firstRun) {
+                        window.lastBroadcastId = bcast.id;
+                    } 
+                    // Otherwise, if the ID has changed, it's a new message.
+                    else if (bcast.id !== window.lastBroadcastId) {
+                        window.lastBroadcastId = bcast.id;
+                        alert("BROADCAST RECEIVED:\n\n" + bcast.message);
+                    }
+                }
+
+                // Timer
+                var timerData = json.meta.timer;
+                if (timerData) {
+                    handleSyncedTimer(timerData);
+                }
+            }
+            // Ensure firstRun is false after the initial generation
+            window.firstRun = false;
+            // ### END CHANGED
+
             // json format - { 'room': { 'queue': [username, time] } }
             // so we extract queues by just taking the first key and keying into "json" to get the queues.
             // make sure to sort by longest time created!
-            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner", "section", "is-permanent", "owners"].includes(e))[0]];
+            // Filter out new metadata key "meta"
+            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner", "section", "is-permanent", "owners", "meta"].includes(e))[0]];
+
             // delete queues that don't exist in the JSON
             Array.from(document.querySelectorAll(".queue"))
             .filter(_q => _q.id != "queueadd")                      // must be a real queue - do not remove "Add Queue"!
@@ -557,6 +598,9 @@
                     joinRoom();
                 }
             }, 250);
+            
+            window.lastBroadcastId = "";
+            window.timerSync = false;
         }
         function syncArr(_old, _new) {
             var actions = [];
@@ -1023,32 +1067,124 @@
             document.querySelector("#timertext").innerHTML = msToTime(time);
         }
         window.timerLength = 120 * 60 * 1000;
-        function toggleTimer(event) {
-            var border = event.currentTarget.parentNode.parentNode.querySelector('#innertimer-border');
-            if (event.currentTarget.innerHTML == "▶") {
-                border.classList.add('innertimer-border-active');
-                event.currentTarget.innerHTML = "⏸";
-                window.timerRunning = true;
-                window.timerStopped = false;
-                recurseTimer();
+        
+        async function toggleTimerSync() {
+            var op = window.timerSync ? "disable_sync" : "enable_sync";
+            try {
+                await fetchAndLimit(`roomd.wsgi?setup=true&action=timer&room=${window.roomname}&op=${op}`);
+                // Visual updates happen via SSE
+            } catch(e) { alert(e); }
+        }
+
+        async function sendBroadcast() {
+            var msg = prompt("Enter the message to broadcast to all connected users:");
+            if (msg && msg.trim() !== "") {
+                try {
+                    await fetchAndLimit(`roomd.wsgi?setup=true&action=broadcast&room=${window.roomname}&message=${encodeURIComponent(msg)}`);
+                } catch (e) {
+                    console.error(e);
+                }
             }
-            else if (event.currentTarget.innerHTML == "⏸") {
-                border.classList.remove('innertimer-border-active');
-                window.timerRunning = false;
-                event.currentTarget.innerHTML = "▶";
+        }
+
+        function handleSyncedTimer(data) {
+            var btn = document.getElementById("synctimerbtn");
+            var status = document.getElementById("timerstatus");
+            var border = document.querySelector('#innertimer-border');
+            var playBtn = document.querySelector('#stopstart');
+
+            // Update Sync Button Text/State
+            window.timerSync = data.sync;
+            
+            if (window.is_owner) {
+                btn.innerHTML = data.sync ? "Disable timer sync" : "Enable timer sync";
+                btn.style.borderColor = data.sync ? "var(--boilermaker-gold)" : "";
+            } else {
+                btn.style.display = "none"; // Non-owners can't toggle sync
+            }
+
+            if (data.sync) {
+                status.style.display = "block";
+                
+                // Force the local timer to match server state
+                window.timerLength = data.duration;
+                
+                if (data.running) {
+                    // Calculate elapsed time
+                    var now = Date.now(); // JS time is ms
+                    var elapsed = now - data.start_time;
+                    
+                    // Set local state vars expected by recurseTimer
+                    window.timerStart = data.start_time; 
+                    window.timerRunning = true;
+                    window.timerStopped = false;
+                    
+                    // Visuals
+                    playBtn.innerHTML = "⏸";
+                    border.classList.add('innertimer-border-active');
+                    
+                    // If we aren't already looping, kick it off
+                    // (recurseTimer checks window.timerRunning)
+                    recurseTimer(); 
+                } else {
+                    // Timer is paused/stopped on server
+                    window.timerRunning = false;
+                    window.timerStopped = true;
+                    playBtn.innerHTML = "▶";
+                    border.classList.remove('innertimer-border-active');
+                    
+                    // Show current remaining time
+                    changeTimer(window.timerLength);
+                }
+            } else {
+                status.style.display = "none";
+                // If sync turned off remotely, we revert to local manual control
+                // usually just leaving it in current state is fine
+            }
+        }
+
+        function toggleTimer(event) {
+            // New logic for sync
+            if (window.timerSync && window.is_owner) {
+                var op = window.timerRunning ? "stop" : "start";
+                // Send current duration setting in case it changed
+                fetchAndLimit(`roomd.wsgi?setup=true&action=timer&room=${window.roomname}&op=${op}&duration=${window.timerLength}`);
+                return;
+            } else if (!window.timerSync) {
+                // Original logic
+                var border = event.currentTarget.parentNode.parentNode.querySelector('#innertimer-border');
+                if (event.currentTarget.innerHTML == "▶") {
+                    border.classList.add('innertimer-border-active');
+                    event.currentTarget.innerHTML = "⏸";
+                    window.timerRunning = true;
+                    window.timerStopped = false;
+                    recurseTimer();
+                }
+                else if (event.currentTarget.innerHTML == "⏸") {
+                    border.classList.remove('innertimer-border-active');
+                    window.timerRunning = false;
+                    event.currentTarget.innerHTML = "▶";
+                }
             }
         }
         function resetTimer() {
-            var border = document.querySelector('#innertimer-border');
-            border.classList.remove('innertimer-border-active');
-            window.timerStopped = true;
-            window.timerRunning = false;
-            document.querySelector('#stopstart').innerHTML = "▶";
-            document.querySelector("#timertext").innerHTML = msToTime(window.timerLength);
-            delete window.timerStart;
-            delete window.lastSavedTimestamp;
-            delete window.lastTimestamp;
+            // New logic for sync
+            if (window.timerSync && window.is_owner) {
+                fetchAndLimit(`roomd.wsgi?setup=true&action=timer&room=${window.roomname}&op=reset&duration=${window.timerLength}`);
+            } else if (!window.timerSync) {
+                // Original logic
+                var border = document.querySelector('#innertimer-border');
+                border.classList.remove('innertimer-border-active');
+                window.timerStopped = true;
+                window.timerRunning = false;
+                document.querySelector('#stopstart').innerHTML = "▶";
+                document.querySelector("#timertext").innerHTML = msToTime(window.timerLength);
+                delete window.timerStart;
+                delete window.lastSavedTimestamp;
+                delete window.lastTimestamp;
+            }
         }
+
         function checkTime(event) {
             if (event.key == "Enter" || event.type == "blur") {
                 event.currentTarget.innerHTML = event.currentTarget.innerHTML.replace(" ", "");
@@ -1079,5 +1215,4 @@
         }
     </script>
 </body>
-<!-- Designed and deployed by Niraj Menon, 2023. -->
 </html>

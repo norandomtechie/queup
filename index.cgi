@@ -15,6 +15,7 @@ sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
 
 # load the HTML
 print ("Content-Type: text/html\r\n")
+# with io.open('app.html' if username != "menon18" else 'app.html', 'r', encoding='utf8') as file:
 with io.open('app.html', 'r', encoding='utf8') as file:
     # fill username
     data = file.read().replace("--username--", username)
