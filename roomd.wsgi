@@ -16,7 +16,7 @@ private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 
 sys.path.append(os.environ['PWD'] + '/queup')
 from lib.lock import *
-from lib.methods_dec3 import *
+from lib.methods import *
 from lib.ratelimiter import *
 from lib.wsgidefs import *
 
@@ -33,7 +33,7 @@ def application(environ, start_response):
         return ret_500(start_response, "Database connection failed.  Contact course staff **immediately**.")
     
     # initialize some variables from wsgi environment
-    user = environ.get('REMOTE_USER', "")
+    user = environ.get('REMOTE_USER', "").lower()
     if user == "":
         return ret_401(start_response, "No user provided.")
     
@@ -56,9 +56,7 @@ def application(environ, start_response):
         return ret_400(start_response, "Invalid room name " + room)
     
     action = query.get('action', '')
-    ### CHANGED: Added 'timer' and 'broadcast' to allowed actions
     actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast']
-    ### END CHANGED
     if 'sseupdate' not in query and not (action in actions):
         return ret_400(start_response, "Invalid action " + action)
     setup = query.get('setup', '')

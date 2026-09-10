@@ -1,9 +1,14 @@
 import os
 import re
+import sys
 from time import time
 import json
 import redis
 from datetime import timedelta
+import uuid 
+
+import pwd
+import subprocess
 
 # path to private directory for logs and db files
 try:
@@ -29,7 +34,9 @@ room<room> = {
     "subtitle": "subtitle",
     "locked": 0,
     "cooldown": 0,
-    "owners": ["user1", "user2"]
+    "owners": ["user1", "user2"],
+    "timer": {"sync": False, "running": False, "start_time": 0, "duration": 7200000},
+    "broadcast": {"message": "", "id": ""}
 }
 """
 
@@ -60,7 +67,9 @@ def createroom(room, user):
         "subtitle": "",
         "locked": 0,
         "cooldown": 0,
-        "owners": [user]
+        "owners": [user],
+        "timer": {"sync": False, "running": False, "start_time": 0, "duration": 7200000}, # default 2h
+        "broadcast": {"message": "", "id": ""}
     }))
     # add current user as an owner
     ownroom(room, user)
@@ -314,6 +323,54 @@ def getlastadd(room, username):
                 last_add_time = user["time"]
     return last_add_time
 
+def resolveuser(username):
+    # check if redis already has "user:username" and use that
+    if rds.exists("user:"+username):
+        return rds.get("user:"+username).decode("utf-8")
+    # otherwise, get it below and put it into redis
+    # getent/passwd via the `pwd` module
+    try:
+        user_entry = pwd.getpwnam(username)
+        # The GECOS field (pw_gecos) typically stores "Name,Room,Phone,..."
+        # We take everything before the first comma.
+        full_name = user_entry.pw_gecos.split(',')[0]
+        # Split full name into parts and take first/last
+        name_parts = full_name.strip(" ").split()
+        full_name = f"{name_parts[0]} {name_parts[-1]}" if len(name_parts) > 1 else name_parts[0]
+        rds.set("user:"+username, full_name)
+        return full_name
+    except KeyError:
+        pass
+    # Priority 2: The `ph` command (directory lookup).
+    try:
+        result = subprocess.run(
+            ["ph", f"alias={username}"], 
+            capture_output=True, 
+            text=True, 
+            check=False # Don't crash if ph returns a non-zero exit code (e.g. not found)
+        )
+        # If the command failed generally, return None
+        if result.returncode != 0:
+            return username
+        # Parse the output line by line
+        for line in result.stdout.splitlines():
+            # Clean up whitespace (leading/trailing)
+            clean_line = line.strip()
+            # Look for the "name:" field specifically
+            if clean_line.lower().startswith("name:"):
+                # Split at the first colon, take the second part, and strip spaces
+                # Output: "name: niraj..." -> ["name", " niraj..."] -> "niraj..."
+                full_name = clean_line.split(":", 1)[1].strip()
+                # Split the full name into words, capitalize each word, and take first/last
+                name_parts = full_name.split()
+                full_name = f"{name_parts[0].capitalize()} {name_parts[-1].capitalize()}" if len(name_parts) > 1 else name_parts[0].capitalize()
+                rds.set("user:"+username, full_name)
+                return full_name
+    except Exception as e:
+        sys.stderr.write(f"resolveuser: An unexpected error occurred running ph: {e}\n")
+        return username
+    return username
+
 def getusers(queue, room):
     if not rds.exists("room"+room):
         raise Exception("getusers: " + room + " does not exist.")
@@ -333,6 +390,11 @@ def getusers(queue, room):
                 all_users[q].append((x["user"], x["time"], x["waitdata"], x["mark"], sections.get(x["user"], "")))
         room_d = {}
         room_d[room] = all_users
+        room_d["meta"] = {
+            "timer": rds_room.get("timer", {"sync": False, "running": False, "start_time": 0, "duration": 7200000}),
+            "broadcast": rds_room.get("broadcast", {"message": "", "id": ""})
+        }
+        room_d["names"] = {user: resolveuser(user) for q in rds_room["queues"] for user in [x["user"] for x in rds_room["queues"][q]]}
         return room_d
     else:
         rds_room = json.loads(rds.get("room"+room))
@@ -413,3 +475,47 @@ def set1q(perm, room):
         elif room in singleq_rooms and not perm:
             singleq_rooms.remove(room)
         rds.set("singleq_rooms", ",".join(singleq_rooms))
+
+def updatetimer(room, op, duration=None):
+    if not rds.exists("room"+room): raise Exception("Room does not exist")
+    rds_room = json.loads(rds.get("room"+room))
+    
+    # Ensure timer dict exists for old rooms
+    if "timer" not in rds_room: 
+        rds_room["timer"] = {"sync": False, "running": False, "start_time": 0, "duration": 7200000}
+
+    current = rds_room["timer"]
+    
+    if op == "enable_sync":
+        current["sync"] = True
+    elif op == "disable_sync":
+        current["sync"] = False
+    elif op == "start":
+        current["running"] = True
+        current["start_time"] = time() * 1000 # Use milliseconds for JS compatibility
+        ### CHANGED: Fix bad request error by converting float string to int
+        if duration: current["duration"] = int(float(duration))
+        ### END CHANGED
+    elif op == "stop":
+        # Calculate remaining duration so we can resume
+        elapsed = (time() * 1000) - current["start_time"]
+        current["duration"] = max(0, current["duration"] - elapsed)
+        current["running"] = False
+    elif op == "reset":
+        current["running"] = False
+        ### CHANGED: Fix bad request error by converting float string to int
+        if duration: current["duration"] = int(float(duration))
+        ### END CHANGED
+        
+    rds_room["timer"] = current
+    rds.set("room"+room, json.dumps(rds_room))
+
+def sendbroadcast(room, user, message):
+    if not rds.exists("room"+room): raise Exception("Room does not exist")
+    rds_room = json.loads(rds.get("room"+room))
+    
+    rds_room["broadcast"] = {
+        "message": "'" + message + "' from " + user + ".",
+        "id": str(uuid.uuid4()) # Unique ID to prevent re-alerting
+    }
+    rds.set("room"+room, json.dumps(rds_room))

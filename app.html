@@ -37,6 +37,18 @@
                     <button class="btn" id="adminpanel" onclick="window.open('admin?room='+window.roomname, '_blank');">View control panel</button>
                     <button class="btn" id="adminpanel" onclick="toggleTimerView()">Toggle exam timer</button>
                     <button class="btn hide-if-not-owner" id="broadcastbtn" onclick="sendBroadcast()">Broadcast Message</button>
+                    <button id="notify-toggle" class="btn btn-sm btn-outline-secondary" title="Enable/disable browser notifications when someone joins a queue" onclick="toggleNotifications()">
+                        🔕
+                    </button>
+                    <select class="settings-select-btn" id="sound-library" title="Change sound played when notifications are enabled" onchange="changeSoundPreference()" style="display:none; margin-left: 5px;">
+                        <option value="sounds/bell.mp3">Default Bell</option>
+                        <option value="sounds/notification.mp3">App Notification 1</option>
+                        <option value="sounds/notification2.mp3">App Notification 2</option>
+                        <option value="sounds/wrestlemania.mp3">WrestleMania!</option>
+                        <option value="sounds/silence.mp3">Silence</option>
+                    </select>
+                    <!-- <div class="notification-controls" style="display: flex; align-items: center; flex-direction: row; margin-left: 15px;">
+                    </div> -->
                     <p id="roomstatus">Room status: --roomstatus--</p>
                 </div>
             </div>
@@ -223,7 +235,7 @@
                     alert("An error occurred while creating the room. It's possible the server is just down - try again later.  If this was after multiple attempts, the room name may already be taken.");
                     return;
                 }
-		alert("Thanks for creating a QueUp room!\n\nPlease be aware that this room will self-delete after 24 hours to save disk space.  If you are a teaching assistant/instructor for a course who needs to use this room long-term, please email Niraj (niraj@purdue.edu) to ask for the room to be made permanent.  Include 'QueUp' and the room number in the subject line to ensure it gets past his spam filters!");
+                alert("Thanks for creating a QueUp room!\n\nPlease be aware that this room will self-delete after 24 hours to save disk space.  If you are a teaching assistant/instructor for a course who needs to use this room long-term, please email Niraj (niraj@purdue.edu) to ask for the room to be made permanent.  Include 'QueUp' and the room number in the subject line to ensure it gets past his spam filters!");
                 setupRoom(response, roomname);
             }
             catch(err) {
@@ -264,9 +276,8 @@
                 return;
             }
             
-            // ### CHANGED: Set firstRun flag to true to silence initial broadcast
+            // Set firstRun flag to true to silence initial broadcast
             window.firstRun = true;
-            // ### END CHANGED
 
             window.is_owner = json["is-owner"];
             window.section = json["section"];
@@ -313,6 +324,7 @@
                 };
                 window.evtSource.onmessage = function(event) {
                     var json = JSON.parse(event.data);
+                    window.lastJSON = json;
                     // an empty response means the room was deleted. 
                     // close the event source and return to the overlay.
                     console.log(json);
@@ -363,27 +375,6 @@
                         delete window.evtSource;
                         // retry...
                         setTimeout(createEventSource, 1000);
-                        // // first, test the connection
-                        // // create an AbortController to stop the network request because sseupdate will not return
-                        // // unless there's an error
-                        // const controller = new AbortController()
-                        // const signal = controller.signal
-                        // try {
-                        //     // do we have Internet?
-                        //     var test = await fetch("https://engineering.purdue.edu/~menon18/", {signal, cache: "no-store"});
-                        //     if (test.status == 200) {
-                        //         // then it was just a regular drop
-                        //         // kill the connection
-                        //         controller.abort();
-                        //     }
-                        //     else {
-                        //         handleError(test, null);
-                        //     }
-                        // }
-                        // catch(err) {
-                        //     handleError({status: 0}, err);
-                        // }
-                        // controller.abort();
                     }
                 }
                 // create an interval to check for activity every 1 hour.
@@ -427,15 +418,18 @@
                     handleSyncedTimer(timerData);
                 }
             }
-            // Ensure firstRun is false after the initial generation
-            window.firstRun = false;
-            // ### END CHANGED
 
             // json format - { 'room': { 'queue': [username, time] } }
             // so we extract queues by just taking the first key and keying into "json" to get the queues.
             // make sure to sort by longest time created!
-            // Filter out new metadata key "meta"
-            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner", "section", "is-permanent", "owners", "meta"].includes(e))[0]];
+            var queues = json[Object.keys(json).filter(e => !["subtitle", "is-owner", "section", "is-permanent", "owners", "meta", "names"].includes(e))[0]];
+            
+            // in {"user": "Full Name"}, change to "user": "Full N."}
+            if (json["names"]) {
+                Object.keys(json["names"]).forEach(k => {
+                    json["names"][k] = json["names"][k].split(" ")[0] + " " + json["names"][k].split(" ")[1].slice(0, 1) + ".";
+                });
+            }
 
             // delete queues that don't exist in the JSON
             Array.from(document.querySelectorAll(".queue"))
@@ -456,26 +450,34 @@
                 // look at what's already in the queue DOMs and compare it to what's in the JSON
                 // then generate a optimized list of actions to perform.
                 // increases performance and reduces DOM thrashing.
-                var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => e.querySelector(".username_text").innerHTML), q.map(e => e[0]));
+                var actions = syncArr(list.filter(e => !e.classList.contains('waiter-add')).map(e => e.querySelector("#username_text").innerHTML), q.map(e => e[0]));
                 actions.forEach(a => {
                     // format of a: ['action', username, (position)]
                     switch(a[0]) {
                         case "delete":
                             selectElmByUsername(a[1], _q) ? selectElmByUsername(a[1], _q).remove() : null;
+                            currentUsers.delete(`${_q}-${a[1]}`);
                             break;
                         case "add":
                             var user = a[1];
                             var data = q.filter(e => e[0] == user)[0][2];
                             var marked = q.filter(e => e[0] == user)[0][3] == "1" ? true : false;
                             var section = q.filter(e => e[0] == user)[0][4];
+                            
                             section = section ? section : "";
                             if (a[1] == window.username) {
                                 window.userdata = data;
                                 window.usermarked = marked;
-                                addSelf(_q);
+                                addSelf(_q, json["names"] ? json["names"][a[1]] : null);
                             }
                             else {
-                                addToQueue(a[1], data, marked, section, _q);
+                                addToQueue(a[1], data, marked, section, _q, json["names"] ? json["names"][a[1]] : null);
+                            }
+                            // Create a unique identifier for the user in that specific queue
+                            const userKey = `${_q}-${a[1]}`;
+                            currentUsers.add(userKey);
+                            if (!previousQueueUsers.has(userKey) && !window.firstRun) {
+                                triggerNotification(a[1] + " (" + data + ")", _q);
                             }
                             break;
                         case "shift":
@@ -511,19 +513,22 @@
                 // in room and we can add waiter-add again
                 var list = Array.from(document.querySelector(`#queue${_q}`).children);
                 if (list.filter(e => e.classList.contains('waiter-add') || e.classList.contains('is-self')).length == 0) {
-                    var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${_q}')"><p class="username_text">+</p></div>`;
+                    var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${_q}')"><p id="username_text" class="username_text">+</p></div>`;
                     var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
                     document.querySelector(`#queue${_q}`).appendChild(added);
                 }
                 // now sync up time
                 applyTimeData(_q, q);
+
+                // Ensure firstRun is false after the initial generation
+                window.firstRun = false;
             })
         }
         function applyTimeData(q, roomdata) {
             var list = Array.from(document.querySelector(`#queue${q}`).children);
             if (['GLX8Q'].includes(window.roomname)) {
                 roomdata.forEach(a => {
-                    var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
+                    var elm = list.filter(e => e.querySelector("#username_text").innerHTML.split(" ")[0] == a[0])[0];
                     var now = Date.now();
                     var then = new Date(parseFloat(a[1])*1000);
                     var minute = parseInt((now - then) / (60 * 1000));
@@ -557,7 +562,8 @@
             }
             else {
                 roomdata.forEach(a => {
-                    var elm = list.filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == a[0])[0];
+                    console.log(list);
+                    var elm = list.filter(e => e.querySelector("#username_text").innerHTML.split(" ")[0] == a[0])[0];
                     var now = Date.now();
                     var then = new Date(parseFloat(a[1])*1000);
                     var minute = parseInt((now - then) / (60 * 1000));
@@ -586,7 +592,11 @@
                 document.documentElement.setAttribute("theme", "light");
             }
             document.addEventListener('click', (e) => {
-                if (e.target.id != "gear" && document.querySelector("#gear").classList.contains("opened")) {
+                if (e.target.id != "gear" && 
+                        document.querySelector("#gear").classList.contains("opened") &&
+                        !e.target.nodeName == "SELECT" &&
+                        !e.target.id == "notify-toggle"
+                    ) {
                     document.querySelector("#gear").click();
                 }
             }, true);
@@ -622,7 +632,7 @@
             return actions;
         }
         function selectElmByUsername(username, queue) {
-            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.querySelector(".username_text").innerHTML.split(" ")[0] == username);
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.querySelector("#username_text").innerHTML.split(" ")[0] == username);
             return list.length > 0 ? list[0] : null;
         }
         function clock() {
@@ -633,7 +643,7 @@
             document.querySelector("#time").innerHTML = `${IntTwoChars(time.getHours())}:${IntTwoChars(time.getMinutes())}`;
             setTimeout(clock, 1000);
         }
-        function addSelf(queue) {
+        function addSelf(queue, fullname=null) {
             var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter-add'));
             if (list.length > 0) {
                 list[0].remove();
@@ -642,12 +652,23 @@
                 var sec = "";
             else
                 var sec = `<p class="section_text">${window.section == "" ? "No section" : "Sec " + window.section}</p>`;
-            var html = `<div class="waiter is-self ${window.usermarked ? "flashing" : ""}" onclick="addBtnHandler(event, '${queue}')">
-                            <p class="username_text">${window.username}</p>
+            if (fullname) {
+                var html = `<div class="waiter is-self ${window.usermarked ? "flashing" : ""}" onclick="addBtnHandler(event, '${queue}')">
+                            <p id="username_text" class="username_text" style="display: none">${window.username}</p>
+                            <p id="fullname_text" class="username_text" oncontextmenu="copyUsername(event)" title="${window.username}">${fullname == "" ? window.username : fullname}</p>
                             <p class="data_text">${window.userdata}</p>
                             <p class="time_text">&lt;1 min</p>
                             ${sec}
                         </div>`;
+            }
+            else {
+                var html = `<div class="waiter is-self ${window.usermarked ? "flashing" : ""}" onclick="addBtnHandler(event, '${queue}')">
+                                <p id="username_text" class="username_text">${window.username}</p>
+                                <p class="data_text">${window.userdata}</p>
+                                <p class="time_text">&lt;1 min</p>
+                                ${sec}
+                            </div>`;
+            }
             var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
             document.querySelector(`#queue${queue}`).appendChild(added);
         }
@@ -659,14 +680,14 @@
             // add back add button if it's not there
             var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter-add'));
             if (list.length == 0) {
-                var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p class="username_text">+</p></div>`;
+                var html = `<div class="waiter waiter-add" onclick="addBtnHandler(event, '${queue}')"><p id="username_text" class="username_text">+</p></div>`;
                 var added = new DOMParser().parseFromString(html, 'text/html').body.children[0];
                 document.querySelector(`#queue${queue}`).appendChild(added);
             }
         }
         function delFromRoomTA(username, queue) {
             fetchAndLimit(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
-            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('.username_text').innerHTML == username);
+            var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('#username_text').innerHTML == username);
             if (list.length > 0) {
                 list[0].remove();
             }
@@ -693,11 +714,11 @@
                         .then(t => {
                             if (t.startsWith("[cooldown]")) {
                                 alert(t.split(" ").slice(1).join(" "));
-                                delSelf(queue);
+                                // delSelf(queue);
                             }
                             else if (t.startsWith("[singlequeue]")) {
                                 alert(t.split(" ").slice(1).join(" "));
-                                delSelf(queue);
+                                // delSelf(queue);
                                 window.disableOperations = false;
                             }
                         })
@@ -714,14 +735,15 @@
                     else {
                         fetchAndLimit(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}`);
                     }
-                    var qlist = document.querySelector(`#queue${queue}`).children;
-                    var added = qlist[qlist.length - 1];
-                    if (action == "add") {
-                        addSelf(queue);
-                    }
-                    else if (action == "del") {
-                        delSelf(queue);
-                    }
+                    // No longer necessary - sseupdate should add this in for us.
+                    // var qlist = document.querySelector(`#queue${queue}`).children;
+                    // var added = qlist[qlist.length - 1];
+                    // if (action == "add") {
+                    //     addSelf(queue, window.lastJSON["names"] ? window.lastJSON["names"][window.username] : null);
+                    // }
+                    // else if (action == "del") {
+                    //     delSelf(queue);
+                    // }
                 }
             }
             catch(err) {
@@ -729,10 +751,10 @@
                 console.error(err);
             }
         }
-        function addToQueue(username, data, marked, section, queue) {
+        function addToQueue(username, data, marked, section, queue, fullname=null) {
             var list = document.querySelector(`#queue${queue}`);
             // do not add duplicates!
-            if (Array.from(list.children).map(e => e.querySelector(".username_text").innerHTML).includes(username)) {
+            if (Array.from(list.children).map(e => e.querySelector("#username_text").innerHTML).includes(username)) {
                 return;
             }
             var owner_buttons = window.is_owner ? `<div class="owner-buttons">
@@ -742,7 +764,12 @@
             var time = "&lt;1";
             var parser = new DOMParser();
             var user_data = `<p class="data_text">${data}</p>`;
-            var newhtml = parser.parseFromString(`<div class="waiter ${marked ? "flashing" : ""}"><p class="username_text">${username}</p>${user_data}<p class="time_text">${time} min</p><p class="section_text">${(section == "") ? "No section" : ("Sec " + section)}</p>${owner_buttons}</div>`, 'text/html');
+            if (fullname) {
+                var newhtml = parser.parseFromString(`<div class="waiter ${marked ? "flashing" : ""}"><p id="username_text" class="username_text" style="display: none">${username}</p><p id="fullname_text" class="username_text" oncontextmenu="copyUsername(event)" title="${username}">${fullname == "" ? username : fullname}</p>${user_data}<p class="time_text">${time} min</p><p class="section_text">${(section == "") ? "No section" : ("Sec " + section)}</p>${owner_buttons}</div>`, 'text/html');
+            }
+            else {
+                var newhtml = parser.parseFromString(`<div class="waiter ${marked ? "flashing" : ""}"><p id="username_text" class="username_text">${username}</p>${user_data}<p class="time_text">${time} min</p><p class="section_text">${(section == "") ? "No section" : ("Sec " + section)}</p>${owner_buttons}</div>`, 'text/html');
+            }
             var elm = newhtml.body.children[0];
             console.log("addtoqueue", elm, list.children);
             // has our own entry already been added?  Then add the incoming entry at the end of the list.
@@ -760,7 +787,7 @@
             }
             else if (window.is_owner && !event.currentTarget.classList.contains("is-self")) {
                 // we are a TA and removing someone else's username, not our own
-                performOp('del', queue, event.currentTarget.querySelector('.username_text').innerHTML.split(" ")[0]);
+                performOp('del', queue, event.currentTarget.querySelector('#username_text').innerHTML.split(" ")[0]);
             }
             else if (event.currentTarget.classList.contains("is-self")) {
                 // then we're removing an existing one
@@ -892,7 +919,7 @@
                 return;
             }
             var queue = event.currentTarget.parentNode.parentNode.parentNode.id.slice(5);
-            var username = event.currentTarget.parentNode.parentNode.querySelector(".username_text").innerHTML;
+            var username = event.currentTarget.parentNode.parentNode.querySelector("#username_text").innerHTML;
             if (action == 'mark') {
                 // send a "mark" signal for this user.  if already marked, will be unmarked.
                 fetchAndLimit(`roomd.wsgi/?setup=true&action=mark&room=${window.roomname}&queue=${queue}&username=${username}`);
@@ -987,6 +1014,8 @@
         // set up gear collapsible
         var gear = document.getElementById("gear");
         gear.addEventListener('click', function(event) {
+            console.log(event.target);
+            if ((event.target.nodeName == "SELECT") || (event.target.id == "notify-toggle")) return;
             event.currentTarget.classList.toggle("opened");
             document.querySelector(".collapsible").classList.toggle("opened");
         });
@@ -1007,6 +1036,17 @@
         document.querySelector("#genroom").addEventListener('click', generateRandomRoomName);
         if (localStorage.lastjoinedroom) {
             document.getElementById("joinroom").value = localStorage.lastjoinedroom;
+        }
+
+        function copyUsername(event) {
+            event.preventDefault();
+            var username = event.currentTarget.title;
+            navigator.clipboard.writeText(username).then(() => {
+                // Optionally, provide feedback to the user that the username was copied
+                alert(`Username "${username}" copied to clipboard!`);
+            }).catch(err => {
+                console.error('Failed to copy username: ', err);
+            });
         }
 
         ///////////////////////////////////////////////////////////////
@@ -1212,6 +1252,71 @@
                 resetTimer();
                 event.currentTarget.blur();
             }
+        }
+
+        let notificationsEnabled = false;
+        let currentSound = null;
+        let previousQueueUsers = new Set(); // To track who is already in the queue
+        const currentUsers = new Set();
+
+        // Initialize preferences on load
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedSound = localStorage.getItem('queup_sound') || '/sounds/bell.mp3';
+            document.getElementById('sound-library').value = savedSound;
+            currentSound = new Audio(savedSound);
+
+            // Enable notifications if saved in localstorage
+            if (localStorage.getItem('queup_notifications') === 'true') {
+                toggleNotifications();
+            }
+        });
+
+        function toggleNotifications() {
+            const btn = document.getElementById('notify-toggle');
+            const select = document.getElementById('sound-library');
+            
+            if (!notificationsEnabled) {
+                // Request browser-level notification permissions
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        notificationsEnabled = true;
+                        btn.innerHTML = '🔔';
+                        select.style.display = 'inline-block';
+                        localStorage.setItem('queup_notifications', 'true');
+                    } else {
+                        alert('Please allow browser notifications to use this feature.');
+                    }
+                });
+            } else {
+                notificationsEnabled = false;
+                btn.innerHTML = '🔕';
+                select.style.display = 'none';
+                localStorage.setItem('queup_notifications', 'false');
+            }
+        }
+
+        function changeSoundPreference() {
+            const selected = document.getElementById('sound-library').value;
+            currentSound = new Audio(selected);
+            localStorage.setItem('queup_sound', selected);
+            
+            // Play a quick test sound so the user knows what they selected
+            currentSound.play().catch(e => console.log('Audio test failed:', e));
+        }
+
+        function triggerNotification(username, queueName) {
+            if (!notificationsEnabled) return;
+
+            // Play the selected sound
+            if (currentSound) {
+                currentSound.play().catch(e => console.log('Audio blocked by browser policy:', e));
+            }
+            
+            // Show the desktop notification
+            new Notification("New User in Queue", {
+                body: `${username} just joined ${queueName}.`,
+                icon: '/favicon.ico'
+            });
         }
     </script>
 </body>

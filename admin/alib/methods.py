@@ -28,14 +28,34 @@ def sectiondata(room, data="", action="get"):
             data = "\n".join(["username,section"] + data)
             return data
     elif action == "set" and data != "":
-        # convert CSV to JSON
-        data = data.lower()
-        if not data.startswith("username"):
-            data = "username,section\n" + data
-        data = list(csv.DictReader(data.split("\n")))
-        # drop all keys that start with an #
-        data = [x for x in data if not x["username"].startswith("#")]
-        data = {x["username"]: x["section"] for x in data}
+        # Accept the file object supplied by a multipart POST directly.  Do
+        # not save the uploaded file: process its CSV rows as they arrive.
+        upload = getattr(data, "file", data)
+        lines = iter(upload) if not isinstance(upload, str) else iter(data.splitlines())
+
+        try:
+            first_line = next(lines)
+        except StopIteration:
+            return False
+        if isinstance(first_line, bytes):
+            first_line = first_line.decode("utf-8")
+
+        def csv_lines():
+            if not first_line.lower().startswith("username"):
+                yield "username,section\n"
+            yield first_line
+            for line in lines:
+                yield line.decode("utf-8") if isinstance(line, bytes) else line
+
+        rows = csv.DictReader(csv_lines())
+        # Keep the persisted section mapping, but never write the upload to
+        # disk.  Normalizing individual values avoids loading the CSV at once.
+        data = {}
+        for row in rows:
+            username = (row.get("username") or "").lower()
+            section = (row.get("section") or "").lower()
+            if username and not username.startswith("#"):
+                data[username] = section
         with open(private + '/sections/' + room + '.json', 'w') as f:
             f.write(dumps(data))
         return True
