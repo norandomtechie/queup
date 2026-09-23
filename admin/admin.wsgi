@@ -55,7 +55,14 @@ def application(environ, strp):
         return ret_json(strp, json.dumps(getdblog(room)))
     elif querychecked and 'section' in query:
         room = query.get("room", "")
-        data = query.get("data", "")
+        if environ.get('REQUEST_METHOD', 'GET') == 'POST':
+            try:
+                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
+            except ValueError:
+                length = 0
+            data = environ['wsgi.input'].read(length).decode('utf-8', errors='replace') if length else ""
+        else:
+            data = ""
         if data == "":
             # this is a request to get the section data
             return ret_json(strp, json.dumps({"status": "success", "data": sectiondata(room, "", "get")}))

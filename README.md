@@ -76,6 +76,10 @@ The full log when downloaded will have coded values for the actions performed, w
 | `uadd` | Added self to queue |
 | `udel` | Removed self from queue |
 | `usdel` | Staff removed user from queue |
+| `rperm` | Toggle room permanency |
+| `r1q` | Toggle single queue |
+| `rtimer` | Set exam timer |
+| `rbcast` | Sent broadcast message |
 
 Here is what it could look like:  
 

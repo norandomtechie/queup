@@ -37,6 +37,78 @@
         #divcooldown {
             margin-top: 25px;
         }
+
+        #panel-controls {
+            width: 35%;
+            min-width: 300px;
+        }
+
+        #panel-log {
+            flex-direction: column;
+        }
+
+        /* mobile-optimized, centered stacked layout */
+        @media only screen and (max-width: 800px) {
+            #topadminpanel {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            #panel-controls, #panel-log {
+                width: 94%;
+                min-width: unset;
+                margin: 10px 0;
+            }
+
+            .adminpanel {
+                height: auto;
+                max-height: none;
+            }
+
+            .roomlistwrap {
+                max-height: 25vh !important;
+            }
+
+            .config {
+                height: auto;
+                min-height: 5vh;
+                flex-wrap: wrap;
+                padding: 4px 0;
+            }
+
+            .config p {
+                font-size: 16px;
+            }
+
+            .config_btn {
+                width: 45%;
+                font-size: 15px;
+            }
+
+            #sectionfilter #secbtn button {
+                width: 40% !important;
+            }
+
+            #actionlog {
+                width: 100%;
+                overflow-x: auto;
+            }
+
+            #attendance {
+                min-width: 480px;
+                font-size: 14px;
+            }
+        }
+
+        @media only screen and (max-width: 420px) {
+            #panel-controls, #panel-log {
+                width: 96%;
+            }
+
+            .config .config_btn {
+                width: 100%;
+            }
+        }
     </style>
     <title>QueUp Control Panel</title>
 </head>
@@ -55,8 +127,8 @@
         </div>
     </nav>
     <div class="container" id="topadminpanel">
-        <div class="container adminpanel" style="min-width: 300px;width: 35%">
-            <div style="width: 100%; display: flex; flex-direction: column; align-items: center; max-height: 50%; overflow-y: auto">
+        <div class="container adminpanel" id="panel-controls">
+            <div class="roomlistwrap" style="width: 100%; display: flex; flex-direction: column; align-items: center; max-height: 50%; overflow-y: auto">
                 <div class="config" id="roomlist" style="justify-content: center; flex-wrap: wrap">
                 </div>
                 <p style="margin-bottom: 0; font-size: large">Click room name to refresh log.</p>
@@ -104,7 +176,7 @@
                 <div id="secbtn"></div>
             </div>
         </div>
-        <div class="container adminpanel" style="flex-direction: column;">
+        <div class="container adminpanel" id="panel-log">
             <div class="view" id="viewswitch" style="flex-direction: row; justify-content: space-evenly;">
                 <button class="view_btn config_btn" id="btn_actionlog" style="height: 4vh" onclick="showView(0)">Action Log</button>
                 <button class="view_btn config_btn" id="btn_sectionmgmt" style="height: 4vh" onclick="showView(1)">Section Management</button>
@@ -148,12 +220,17 @@
             "udel": [ "Removed self from queue", "room", "queue" ],
             "usdel": [ "Staff removed user from queue", "room", "queue", "username" ],
             "rperm": [ "Toggle room permanency", "room" ],
-            "r1q": [ "Toggle single queue", "room" ]
+            "r1q": [ "Toggle single queue", "room" ],
+            "rtimer": [ "Set exam timer", "room", "op" ],
+            "rbcast": [ "Sent broadcast message", "room" ]
         };
-        function fetchAndLimit(url) {
+        function actionDescription(code) {
+            return ACTIONS[code] ? ACTIONS[code][0] : code;
+        }
+        function fetchAndLimit(url, options) {
             return new Promise(async (resolve, reject) => {
                 try {
-                    var resp = await fetch(url);
+                    var resp = await fetch(url, options);
                     if (resp.status == 429) {
                         alert("You appear to be sending too many requests.  Please slow down.");
                         reject("Too many requests");
@@ -309,7 +386,7 @@
                 if (window.roomdata.owners.includes(a[1])) {
                     row.classList.add("owneraction");
                 }
-                action.innerHTML = ACTIONS[a[3]][0];
+                action.innerHTML = actionDescription(a[3]);
                 // if this is a queue- or user-related action...
                 if (a[3].startsWith("q") || a[3].startsWith("u")) {
                     queue.innerHTML = a[5];
@@ -343,7 +420,14 @@
             var r = await fetch(`admin.wsgi?room=${window.roomname}&fulllog=true`);
             json = await r.json();
             json.reverse();
-            var data = json.map(r => new Date(parseFloat(r[0]) * 1000).toLocaleString().replace(", ", "-") + "," + r.slice(1,3) + "," + r.slice(4).join(",")).join("\n");
+            var data = json.map(a => {
+                var datetime = new Date(parseFloat(a[0]) * 1000).toLocaleString().replace(", ", "-");
+                var action = actionDescription(a[3]);
+                var isQueueAction = a[3].startsWith("q") || a[3].startsWith("u");
+                var queue = isQueueAction ? a[5] : "n/a";
+                var other = (isQueueAction ? [a[4]].concat(a.slice(6)) : a.slice(4)).join(" ");
+                return [datetime, a[1], a[2], action, queue, other].join(",");
+            }).join("\n");
             var blob = new Blob(["Date/Time,User,Section,Action,Queue,Other\n", data], {type: "text/csv"});
             var dlink = document.createElement('a');
             dlink.download = `actionlog_${window.roomname}.csv`;
@@ -379,9 +463,11 @@
         }
         async function updateSection() {
             var data = document.querySelector("#sectiondata").value;
-            // urlencode
-            data = encodeURIComponent(data);
-            var r = await fetchAndLimit(`admin.wsgi?room=${window.roomname}&section=true&data=${data}`);
+            var r = await fetchAndLimit(`admin.wsgi?room=${window.roomname}&section=true`, {
+                method: "POST",
+                headers: { "Content-Type": "text/plain;charset=UTF-8" },
+                body: data
+            });
             if (r.status == 200) {
                 alert("Section data has been updated.");
             }
