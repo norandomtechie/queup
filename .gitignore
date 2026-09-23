@@ -1,7 +1,12 @@
-*.db
+*.db*
+*.rdb*
 *.json
 *.conf
 *.log
 *.bz2
 **/__pycache__/
 skip_rooms
+redis*
+nodel*
+app*
+proc*
