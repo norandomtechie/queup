@@ -205,6 +205,9 @@ def handle_request(environ, start_response):
         elif will_chk:
             if "room"+room not in rooms:
                 return ret_400(start_response, "Room not found in database. May be misconfigured." % room)
+            # full=1: a tab on the relay re-checking the server; it gets the payload the relay carries, and isn't a room visit
+            if query.get('full') == '1':
+                return ret_json(start_response, json.dumps(room_payload(rds, room)))
             userdata = getusers("", room)
             userdata["is-owner"] = is_owner
             userdata["section"] = section
@@ -432,8 +435,7 @@ def handle_request(environ, start_response):
                 sys.stderr.write(traceback.format_exc())
                 return ret_ok(start_response, str(e))
         elif will_chk:
-            # full=1: the same payload the relay and SSE carry, for tabs re-checking the server
-            return ret_ok(start_response, json.dumps(room_payload(rds, room) if query.get('full') == '1' else getusers("", room)))
+            return ret_ok(start_response, json.dumps(getusers("", room)))
         else:
             return ret_400(start_response, "Invalid action.")
     elif querychecked:
