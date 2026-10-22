@@ -595,6 +595,8 @@ def sseupdate(environ, start_response):
     if peerid and not re.match(PEERID_RGX, peerid):
         peerid = ''
     sse_user = environ.get('REMOTE_USER', '').lower()
+    # clients that understand signal-only updates ask for them (older pages always get full room state)
+    light = query.get('light', '') == '1'
 
     start_response('200 OK', [
         ('Content-Type', 'text/event-stream;charset=utf-8'),
@@ -607,6 +609,17 @@ def sseupdate(environ, start_response):
 
     # Room state plus mesh presence and this peer's pending signals, read on their own connection
     payload_rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())
+    def take_signals():
+        """This peer's pending signals, removed once read, only for the user who joined with that peer id."""
+        owner_rec = payload_rds.hget("peerkeys"+room, peerid) if peerid else None
+        if not (owner_rec and json.loads(owner_rec).get("user") == sse_user):
+            return []
+        sig_raw = payload_rds.hget("signal"+room, peerid)
+        if not sig_raw:
+            return []
+        payload_rds.hdel("signal"+room, peerid)
+        return json.loads(sig_raw)
+
     def build_payload():
         data = getusers("", room)
         # Only peers that heartbeated in the last 90s (the key's TTL can't expire single members)
@@ -621,15 +634,7 @@ def sseupdate(environ, start_response):
                 meta["peerid"] = pid
                 peers.append(meta)
         data["peers"] = peers
-        signals = []
-        owner_rec = payload_rds.hget("peerkeys"+room, peerid) if peerid else None
-        # deliver a peer's signals only to the user who joined with it (checked each time: joining may finish after connecting)
-        if owner_rec and json.loads(owner_rec).get("user") == sse_user:
-            sig_raw = payload_rds.hget("signal"+room, peerid)
-            if sig_raw:
-                signals = json.loads(sig_raw)
-                payload_rds.hdel("signal"+room, peerid)
-        data["signals"] = signals
+        data["signals"] = take_signals()
         # Latest change time per user|queue, so clients can skip superseded pending actions
         data["watermarks"] = {k.decode(): float(v) for k, v in payload_rds.hgetall("qwatermark"+room).items()}
         data["servertime"] = time()
@@ -657,7 +662,12 @@ def sseupdate(environ, start_response):
                     start_time = time()
                     last_write = start_time
                     try:
-                        yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
+                        if light and is_my_signal and not (is_room_change or is_peerjoin):
+                            # only a signal arrived: skip rebuilding (and peers re-relaying) the whole room
+                            out = {"signalsOnly": True, "signals": take_signals(), "servertime": time()}
+                        else:
+                            out = build_payload()
+                        yield ("data: %s\n\n" % json.dumps(out)).encode()
                         #sys.stderr.write("DEBUG sseupdate: " + str(environ['REMOTE_USER']) + "," + str(room) + "," + str(os.getpid()) + "\n")
                     except GeneratorExit:
                         # Client disconnected: close normally instead of killing the worker

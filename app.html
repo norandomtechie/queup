@@ -892,7 +892,7 @@
         }
 
         // Connections are replaced make-before-break: a working link stays until its replacement opens
-        var CONNECT_TIMEOUT_MS = 15000;
+        var CONNECT_TIMEOUT_MS = 30000;   // signaling can be slow when the server is busy
         window.meshHostId = null;      // non-host: peerid meshConn is connected to
         window.pendingConn = null;     // non-host: {pc, dc, hostId} being set up
         window.hostPending = {};       // host: peerid -> pc being set up
@@ -915,9 +915,23 @@
             window.upstreamTrusted = false;
         }
 
+        // Failed attempts back off (10s, 20s, 40s ... 10 min) so an unreachable host isn't re-signaled on every room update
+        window.connectFailures = 0;
+        window.nextConnectAt = 0;
+        window.backoffHost = null;
+        function noteConnectFailure(hostId) {
+            window.connectFailures = (window.backoffHost === hostId) ? window.connectFailures + 1 : 1;
+            window.backoffHost = hostId;
+            var delay = Math.min(10000 * Math.pow(2, window.connectFailures - 1), 10 * 60 * 1000) * (0.75 + Math.random() * 0.5);
+            window.nextConnectAt = Date.now() + delay;
+            console.warn("Connection to host " + hostId.slice(0, 8) + " failed; next try in " + Math.round(delay / 1000) + "s");
+            setTimeout(reElectHost, delay + 50);
+        }
+
         function connectToHost(host) {
             if (window.leftRoom) return;
             if (!host || host.peerid === window.peerid) return;
+            if (window.backoffHost === host.peerid && Date.now() < window.nextConnectAt) return;
             if (window.pendingConn) {
                 if (window.pendingConn.hostId === host.peerid) return;   // already on it
                 try { window.pendingConn.pc.close(); } catch(e) {}
@@ -939,6 +953,8 @@
                 window.meshConn = pc;
                 window.meshChannel = dc;
                 window.meshHostId = host.peerid;
+                window.connectFailures = 0;
+                window.backoffHost = null;
                 window.upstreamCannotServe = false;   // a new upstream link
                 // only an owner's tab is trusted to relay room state (judged from our own server data)
                 var upstream = window.knownPeers.find(p => p.peerid === host.peerid);
@@ -971,7 +987,10 @@
             pc.onconnectionstatechange = () => {
                 // Only give up on failed connections; 'disconnected' often recovers
                 if (!["failed", "closed"].includes(pc.connectionState)) return;
-                if (window.pendingConn === attempt) window.pendingConn = null;
+                if (window.pendingConn === attempt) {
+                    window.pendingConn = null;
+                    if (pc.connectionState === "failed") noteConnectFailure(host.peerid);
+                }
                 if (window.meshConn === pc) {
                     window.meshConn = null;
                     window.meshChannel = null;
@@ -988,10 +1007,9 @@
             setTimeout(() => {
                 if (window.pendingConn !== attempt) return;
                 // didn't come up: drop just this attempt; any working link stays
-                console.warn("Connection to host " + host.peerid.slice(0, 8) + " didn't come up; will retry");
                 window.pendingConn = null;
                 try { pc.close(); } catch(e) {}
-                setTimeout(reElectHost, 5000 + Math.random() * 5000);
+                noteConnectFailure(host.peerid);
             }, CONNECT_TIMEOUT_MS);
         }
 
@@ -1609,7 +1627,7 @@
             if (window.idlePaused) return;
             if (typeof(EventSource) !== "undefined") {
                 var sseUrl = "roomd.wsgi?sseupdate=true&room=" + window.roomname;
-                if (window.peerid) sseUrl += "&peerid=" + window.peerid;
+                if (window.peerid) sseUrl += "&peerid=" + window.peerid + "&light=1";
                 if (window.evtSource) {
                     try { window.evtSource.close(); } catch(e) {}
                 }
@@ -1629,7 +1647,14 @@
                     if (wasOutage || downFor > 60000) sendHeartbeat();
                 };
                 window.evtSource.onmessage = function(event) {
-                    applyServerPayload(JSON.parse(event.data), true);
+                    var json = JSON.parse(event.data);
+                    if (json.signalsOnly) {
+                        // just signaling for this tab: no room state to render or relay
+                        noteServerTime(json.servertime);
+                        (json.signals || []).forEach(handleSignal);
+                        return;
+                    }
+                    applyServerPayload(json, true);
                 };
                 window.evtSource.onerror = async () => {
                     // Starts the ping-backoff watchdog
@@ -1952,21 +1977,22 @@
                 return;
             }
             var relayed = false, answered = false;
-            function relayInstead() {
+            function relayInstead(failed) {
                 if (relayed || !meshConnected()) return;
                 relayed = true;
-                confirmOutageNow();   // later actions skip the wait entirely
+                // only a real failure means the server is down; a merely slow server just gets this one action relayed
+                if (failed) confirmOutageNow();
                 relayAndApplyAction(actionMsg);
                 window.disableOperations = false;
             }
-            var slowTimer = setTimeout(() => { if (!answered) relayInstead(); }, SLOW_REQUEST_MS);
+            var slowTimer = setTimeout(() => { if (!answered) relayInstead(false); }, SLOW_REQUEST_MS);
             fetchAndLimit(url + `&t=${actionMsg.t}&opid=${actionMsg.id}`, {meshFallback: true})
             .then(r => {
                 answered = true;
                 clearTimeout(slowTimer);
                 if (r.status == 503) {
                     // never reached the server (or gave up waiting)
-                    relayInstead();
+                    if (relayed) confirmOutageNow(); else relayInstead(true);
                     return;
                 }
                 // the server decided, so the mesh copy (if any) is redundant

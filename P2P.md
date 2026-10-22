@@ -43,7 +43,7 @@ The page itself is served by the server, so it can't be loaded or reloaded while
 4. **Star topology.** The mesh is a star around the host. Each non-host tab opens one WebRTC data channel to the host, and the host relays messages between its peers.
 5. **Signaling.** Offers, answers and ICE candidates are sent through the server: `signalsend` stores them in `signal<ROOM>`, and they're delivered over the recipient's SSE stream. All pending signals go out in one batched request, never one request per peer.
 6. **TURN.** A TURN relay (`verilog.ecn.purdue.edu:3478`, UDP and TCP) carries connections that can't go direct.
-7. **Make-before-break.** When the elected host changes, a tab keeps its working link until the replacement is actually open; a replacement that doesn't open within 15s is dropped and retried later. While the server is unreachable, nothing changes, since no new connection could be signaled anyway.
+7. **Make-before-break.** When the elected host changes, a tab keeps its working link until the replacement is actually open; a replacement that doesn't open within 30s is dropped. Failed attempts back off (10s, 20s, 40s … up to 10 minutes), and room updates don't trigger extra retries, so an unreachable host isn't re-signaled constantly. While the server is unreachable, nothing changes, since no new connection could be signaled anyway.
 8. **Leaving.** A closing or reloading tab tells the server right away (`peerleave`, sent with a keepalive fetch so it carries the login). That way it stops being elected host immediately. A tab that crashes without notice drops out of presence after 90s.
 
 ### One server connection per room
@@ -64,7 +64,7 @@ Each SSE connection holds a server worker and a Redis `MONITOR` connection.
 
 The page treats the server as unreachable when any of these happen:
 - **SSE fails twice in a row.** `sseupdate` closes the stream every 60s on purpose, so one failure gets a quick retry first.
-- **A queue action gets no answer within 2s** while a peer is connected. The action goes over the mesh instead.
+- **A queue action fails** while a peer is connected. (One that just gets no answer within 2s goes over the mesh, but doesn't by itself put the tab in offline mode.)
 - **One of the page's own requests fails** (a queue action, signaling, or sync).
 - **A sync gets no answer within 5s.**
 
@@ -136,6 +136,7 @@ The page treats the server as unreachable when any of these happen:
 
 **SSE.**
 - **Extra fields:** each update also carries `peers`, `signals` (for that connection's peer only, and only if the requesting user joined with that peer id), `watermarks` and `servertime`.
+- **Signal-only updates:** pages that ask for them (`light=1`) get `{"signalsOnly": true, "signals": [...]}` when the only news is a signal for them, instead of a full room rebuild that a host would also relay to every peer.
 - **Keepalive:** the stream sends a keepalive comment after 15s without updates, so the server notices clients that have gone away.
 - **Disconnects:** a client disconnect closes the stream normally instead of killing the worker.
 
