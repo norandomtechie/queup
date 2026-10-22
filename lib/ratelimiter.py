@@ -5,7 +5,7 @@ import redis
 
 # Per-user fixed windows: 'action' for clicks, 'mesh' for background traffic (see P2P.md)
 LIMITS = {"action": (3, 1), "mesh": (60, 10)}     # bucket: (max requests, window seconds)
-MESH_ACTIONS = {"signalsend", "peerjoin", "peerheartbeat", "peerleave", "offlinesync", "turn"}
+MESH_ACTIONS = {"peerjoin", "peerleave", "offlinesync"}
 
 
 

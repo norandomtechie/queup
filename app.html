@@ -183,6 +183,8 @@
                 var fetchOptions = Object.assign({}, options, {
                     signal: (options && options.signal) || timeoutController.signal
                 });
+                // roomd publishes a write to the relay before answering, so its update can arrive before the response
+                var payloadsBefore = window.payloadCount;
                 try {
                     var resp = await fetch(url, fetchOptions);
                     clearTimeout(timeoutId);
@@ -207,6 +209,7 @@
                         alert("An error occurred on the server.  Please try again.");
                         reject("Server error");
                     }
+                    if (/[?&]action=/.test(url)) checkRelayedViewAfterWrite(resp.status, payloadsBefore);
                     resolve(resp);
                 }
                 catch(err) {
@@ -296,8 +299,7 @@
                 window.evtSource.close();
             sendLeaveBeacon();
             window.leftRoom = true;
-            window.relyingOnHost = false;
-            stopRelayWatchdog();
+            closeRelay();
             // remove rooms
             Array.from(document.querySelectorAll(".roomtop:not(#queueadddiv)")).forEach(e => e.remove());
             document.getElementById("gear").classList.toggle("opened", false);
@@ -394,74 +396,14 @@
             }
         }
         // Peer-to-peer mesh state (see P2P.md)
-        window.iceServers = null;
         window.peerid = null;
-        window.meshConn = null;      // non-host: RTCPeerConnection to the host
-        window.meshChannel = null;   // non-host: RTCDataChannel to the host
-        window.hostConns = {};       // host only: peerid -> RTCPeerConnection
-        window.hostChannels = {};    // host only: peerid -> RTCDataChannel
-        window.knownPeers = [];      // [{peerid, user, owner, joined}] from SSE
-        window.currentHost = null;
-        window.amIHost = false;
         window.sseDownSince = null;
         // Set once a second consecutive SSE failure rules out routine reconnect cycling
         window.confirmedOutage = false;
 
         // One signaling queue for all peers; messages arriving mid-request ride the next one
-        window.pendingSignals = [];
-        window.signalFlushTimer = null;
-        window.signalFlushInFlight = false;
-
-        function sendSignal(to, type, payload) {
-            if (window.leftRoom) return;
-            window.pendingSignals.push({to: to, type: type, payload: payload});
-            if (window.signalFlushTimer || window.signalFlushInFlight) return;  // the next flush picks it up
-            flushSignals();
-        }
-
-        async function flushSignals() {
-            var messages = window.pendingSignals;
-            window.pendingSignals = [];
-            if (messages.length === 0) return;
-            window.signalFlushInFlight = true;
-            var retryIn = 150;
-            try {
-                var r = await silentFetch(`roomd.wsgi?setup=true&action=signalsend&room=${window.roomname}&peerid=${window.peerid}`, {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({messages: messages})
-                });
-                if (r.status === 429) {
-                    // still rate-limited after retries: keep the signals, try again shortly
-                    window.pendingSignals = messages.concat(window.pendingSignals);
-                    retryIn = 2000;
-                }
-            }
-            catch (err) {
-                console.error("signalsend failed:", err);
-                // The server isn't taking writes, so stop setting up connections that can't be signaled
-                confirmOutageNow();
-            }
-            window.signalFlushInFlight = false;
-            if (window.pendingSignals.length > 0 && !window.signalFlushTimer) {
-                window.signalFlushTimer = setTimeout(() => {
-                    window.signalFlushTimer = null;
-                    flushSignals();
-                }, retryIn);
-            }
-        }
 
         // Bump when the mesh protocol changes; only tabs on the newest version present can host
-        var MESH_VERSION = 5;
-
-        function electHost(connectedPeers) {
-            var newest = Math.max(MESH_VERSION, ...connectedPeers.map(p => p.v || 0));
-            connectedPeers = connectedPeers.filter(p => (p.v || 0) === newest || p.peerid === window.peerid && MESH_VERSION === newest);
-            if (connectedPeers.length === 0) return null;
-            var owners = connectedPeers.filter(p => p.owner);
-            var pool = owners.length ? owners : connectedPeers;
-            return pool.slice().sort((a, b) => a.joined - b.joined || a.user.localeCompare(b.user))[0];
-        }
 
         // Offline actions are signed, journaled on every peer, and synced to the server later (see P2P.md)
         window.signKey = null;
@@ -679,21 +621,17 @@
             }
         }
 
-        // A relayed action must come from a tab the server listed for that user; staff actions only from an owner's tab
-        function knownSender(e) {
-            var meta = window.knownPeers.find(p => p.peerid === e.peerid);
-            return !!meta && meta.user === e.user && (!OWNER_OFFLINE_ACTIONS.includes(e.action) || !!meta.owner);
-        }
-
-        function recordEnvelope(e, origin) {
-            if (!validEnvelope(e) || window.journal[e.id]) return;
-            if (origin === "relayed" && !knownSender(e)) return;
-            if (origin === "self" && window.retractedIds.has(e.id)) return;
+        // true when the envelope is new and accepted
+        function recordEnvelope(e, origin, from) {
+            if (!validEnvelope(e) || window.journal[e.id]) return false;
+            if (origin === "relayed" && !(from && from.user === e.user && (!OWNER_OFFLINE_ACTIONS.includes(e.action) || from.owner))) return false;
+            if (origin === "self" && window.retractedIds.has(e.id)) return false;
             window.journal[e.id] = {env: e, origin: origin, acked: false};
             saveJournal();
             renderRoom();
             // Our server connection works, so submit relayed actions now
             if (window.sseDownSince === null) scheduleOfflineSync();
+            return true;
         }
 
         // Called by the peer that actually performed the action.
@@ -722,55 +660,146 @@
             sendMeshAction(e);
         }
 
-        // The host only relays actions from the tab that signed them, and staff actions only from owners
-        function acceptFromPeer(msg, fromPeerid) {
-            if (!msg || typeof msg !== "object") return false;
-            if (msg.type === "offlineaction") {
-                var meta = window.knownPeers.find(p => p.peerid === fromPeerid);
-                return msg.peerid === fromPeerid && !!meta && meta.user === msg.user &&
-                    (!OWNER_OFFLINE_ACTIONS.includes(msg.action) || !!meta.owner);
-            }
-            // syncack/payload/serverdown only ever flow host -> peers
-            return msg.type === "serverback";
+        // === Relay connection (see P2P.md) ===
+        // One WebSocket to the relay on verilog: room updates arrive over it, and offline actions are shared through it
+        window.relay = null;
+        window.relayInfo = null;      // {url, token} from peerjoin
+        window.relayOpen = false;
+        window.relayCount = 0;        // tabs in this room on the relay, including this one
+        window.relayBackoff = 1000;
+        window.relyingOnRelay = false;
+
+        function connectRelay() {
+            if (!window.relayInfo || window.leftRoom || window.idlePaused || window.relay) return;
+            var ws;
+            try { ws = new WebSocket(window.relayInfo.url + "?token=" + encodeURIComponent(window.relayInfo.token)); }
+            catch (e) { return scheduleRelayReconnect(); }
+            window.relay = ws;
+            ws.onopen = () => {
+                window.relayOpen = true;
+                window.relayBackoff = 1000;
+                updateOfflineBadge();
+            };
+            ws.onmessage = (e) => {
+                var msg;
+                try { msg = JSON.parse(e.data); } catch (err) { return; }
+                handleRelayMessage(msg);
+            };
+            ws.onclose = () => {
+                if (window.relay !== ws) return;
+                window.relay = null;
+                window.relayOpen = false;
+                window.relayCount = 0;
+                updateOfflineBadge();
+                // room updates must keep coming: our own update stream until the relay is back
+                window.relyingOnRelay = false;
+                clearInterval(window.recheckTimer);
+                if (!window.evtSource && !window.leftRoom && !window.idlePaused) createEventSource();
+                scheduleRelayReconnect();
+            };
+            ws.onerror = () => {};
         }
 
-        function handleMeshMessage(msg) {
-            if (!msg) return;
-            if (msg.type === "offlineaction" && msg.room === window.roomname) {
-                recordEnvelope(msg, "relayed");
+        function scheduleRelayReconnect() {
+            if (window.leftRoom || window.idlePaused) return;
+            var delay = window.relayBackoff * (0.75 + Math.random() * 0.5);
+            window.relayBackoff = Math.min(window.relayBackoff * 2, 60000);
+            clearTimeout(window.relayTimer);
+            window.relayTimer = setTimeout(connectRelay, delay);
+        }
+
+        function closeRelay() {
+            clearTimeout(window.relayTimer);
+            var ws = window.relay;
+            window.relay = null;
+            window.relayOpen = false;
+            window.relyingOnRelay = false;
+            clearInterval(window.recheckTimer);
+            if (ws) { try { ws.close(); } catch (e) {} }
+        }
+
+        // Room state from the server, delivered by the relay: the server is up, and our own update stream can close
+        // The relay only sees changes roomd manages to publish to it, so tabs on the relay re-check the server:
+        // after a write of their own that no update followed, after a rejected one, and every 2 minutes
+        window.payloadCount = 0;
+        function checkRelayedViewAfterWrite(status, payloadsBefore) {
+            if (!window.relyingOnRelay) return;
+            // a 400 here usually means our view was out of date
+            if (status == 400) return refreshFromServer();
+            if (status != 200) return;
+            setTimeout(() => { if (window.payloadCount === payloadsBefore) refreshFromServer(); }, 2500);
+        }
+
+        async function refreshFromServer() {
+            if (!window.relyingOnRelay || window.leftRoom || window.sseDownSince !== null) return;
+            try {
+                var r = await silentFetch(`roomd.wsgi?setup=true&action=chk&full=1&room=${window.roomname}`);
+                if (r.ok) applyServerPayload(await r.json(), false);
             }
-            else if (msg.type === "syncack" && msg.results && typeof msg.results === "object") {
-                // a host's report only clears relayed entries; our own are confirmed by the server directly
-                var relayedOnly = {};
-                Object.keys(msg.results).forEach(id => {
-                    var entry = window.journal[id];
-                    if (entry && entry.origin !== "self" && typeof msg.results[id] === "string") relayedOnly[id] = msg.results[id];
-                });
-                processSyncResults(relayedOnly, typeof msg.servertime === "number" ? msg.servertime : undefined);
+            catch (e) {}
+        }
+
+        // Room updates come over the relay when it's there, and over our own SSE stream only when it isn't
+        function startRoomUpdates() {
+            clearTimeout(window.sseFallbackTimer);
+            if (!p2pEnabled()) return createEventSource();
+            // the relay normally answers within a second; if it hasn't in 3s, don't wait for it
+            window.sseFallbackTimer = setTimeout(() => {
+                if (!window.relyingOnRelay && !window.evtSource && !window.leftRoom && !window.idlePaused) createEventSource();
+            }, 3000);
+        }
+
+        function useRelayForUpdates() {
+            if (window.relyingOnRelay) return;
+            window.relyingOnRelay = true;
+            clearTimeout(window.sseFallbackTimer);
+            clearInterval(window.recheckTimer);
+            window.recheckTimer = setInterval(refreshFromServer, 120000 + Math.random() * 20000);
+            if (window.evtSource) {
+                try { window.evtSource.close(); } catch (e) {}
+                window.evtSource = null;
             }
-            else if (msg.type === "serverback") {
-                onPeerReportsServerBack();
+        }
+
+        function applyRelayedRoom(data) {
+            if (!data || typeof data !== "object") return;
+            if (Object.keys(data).length === 0) { applyServerPayload(data, false); return; }
+            var clean = sanitizeRelayedPayload(data);
+            if (!clean) return;
+            applyServerPayload(clean, false);
+            if (window.sseDownSince !== null) {
+                // the server is back, but that doesn't mean this tab can reach it: check now instead of at the next ping
+                if (window.pingTimer) { clearTimeout(window.pingTimer); window.pingTimer = null; }
+                if (!window.signedOut) connectivityWatchdogTick();
             }
-            else if (msg.type === "payload") {
-                handleRelayedPayload(msg);
-            }
-            else if (msg.type === "hostlost") {
-                // the tab we're linked to can't reach the server for us anymore
-                window.upstreamCannotServe = true;
-                resumeOwnSSE("host signed out");
-                sendHeartbeat();
-            }
-            else if (msg.type === "meshinfo") {
-                if (typeof msg.peers === "number") window.meshPeerCount = msg.peers;
+            else scheduleOfflineSync();
+            useRelayForUpdates();
+        }
+
+        function handleRelayMessage(msg) {
+            if (!msg || typeof msg !== "object") return;
+            if (msg.type === "hello") {
+                if (typeof msg.count === "number") window.relayCount = msg.count;
+                if (msg.data && (msg.data.servertime || 0) > window.lastPayloadServerTime) applyRelayedRoom(msg.data);
+                // connected: updates come from here on. The relay's copy may predate a lost publish, so check once
+                useRelayForUpdates();
+                setTimeout(refreshFromServer, Math.random() * 2000);
+                (Array.isArray(msg.pending) ? msg.pending : []).forEach(p => p && recordEnvelope(p.env, "relayed", p.from));
                 updateOfflineBadge();
             }
-            else if (msg.type === "serverdown") {
-                if (window.relyingOnHost) {
-                    // host's confirmation stands in for our own two-strike check
-                    window.sseDownSince = window.sseDownSince || (Date.now() - 3001);
-                    window.confirmedOutage = true;
-                    updateOfflineBadge();
-                }
+            else if (msg.type === "room") {
+                applyRelayedRoom(msg.data);
+            }
+            else if (msg.type === "presence") {
+                if (typeof msg.count === "number") window.relayCount = msg.count;
+                updateOfflineBadge();
+            }
+            else if (msg.type === "envelope") {
+                // offline actions only travel during an outage
+                if (recordEnvelope(msg.env, "relayed", msg.from)) checkHintedOutage();
+            }
+            else if (msg.type === "outage") {
+                checkHintedOutage();
             }
         }
 
@@ -787,6 +816,23 @@
                 if (caughtUp || abandoned) { delete window.journal[id]; dropped = true; }
             });
             return dropped;
+        }
+
+        // Relayed actions the server has caught up with (applied, or superseded by a later change): their senders
+        // synced them, so there's nothing left for this tab to send. Watermarks come only from roomd.
+        function dropSupersededRelayed(watermarks) {
+            if (!watermarks) return;
+            var dropped = false;
+            Object.keys(window.journal).forEach(id => {
+                var entry = window.journal[id];
+                if (entry.acked || entry.origin !== "relayed") return;
+                var e = entry.env, subject = e.target || e.user;
+                var keys = e.action === "qclr" ? ["*|" + e.queue] : [subject + "|" + e.queue, "*|" + e.queue];
+                if (e.action === "qmrk") keys.push("m:" + subject + "|" + e.queue);
+                var mark = Math.max(...keys.map(k => watermarks[k] || 0));
+                if (mark >= e.t / 1000 - 1e-6) { delete window.journal[id]; dropped = true; }
+            });
+            if (dropped) saveJournal();
         }
 
         function processSyncResults(results, serverTime) {
@@ -847,7 +893,6 @@
                     }
                     var j = await r.json();
                     processSyncResults(j.results || {}, j.servertime);
-                    sendMeshAction({type: "syncack", results: j.results || {}, servertime: j.servertime});
                 }
             }
             catch (err) {
@@ -859,285 +904,43 @@
             updateOfflineBadge();
         }
 
-        // The host syncs at once; others wait, since the host's syncack usually leaves them nothing to send
+        // Own actions sync right away. Actions relayed from others wait 5-15s, since their senders usually sync them
+        // first, and go at most once a minute: they come from other users' tabs, and a flood of (invalid) ones
+        // mustn't turn every tab into a stream of sync requests
+        window.lastRelayedSync = 0;
         function scheduleOfflineSync() {
-            if (window.syncTimer || window.syncInFlight || journalEnvelopes(false).length === 0) return;
-            var delay = window.amIHost ? 0 : 4000 + Math.random() * 3000;
-            window.syncTimer = setTimeout(syncOfflineJournal, delay);
+            var pending = journalEnvelopes(false);
+            if (window.syncTimer || window.syncInFlight || pending.length === 0) return;
+            var ownPending = Object.values(window.journal).some(x => !x.acked && x.origin === "self");
+            var delay = ownPending ? 0 : Math.max(5000 + Math.random() * 10000, window.lastRelayedSync + 60000 - Date.now());
+            window.syncTimer = setTimeout(() => {
+                if (!ownPending) window.lastRelayedSync = Date.now();
+                syncOfflineJournal();
+            }, delay);
             updateOfflineBadge();
-        }
-
-        // A peer reached the server: check ours now instead of waiting out the backoff
-        function onPeerReportsServerBack() {
-            // a tab relying on the host learns this from the host's next payload
-            if (window.relyingOnHost) return;
-            if (window.sseDownSince === null || window.disableErrors || window.evtSource) return;
-            if (window.pingTimer) {
-                clearTimeout(window.pingTimer);
-                window.pingTimer = null;
-            }
-            connectivityWatchdogTick();
         }
 
         function sendMeshAction(actionMsg) {
-            forwardToLinks(JSON.stringify(actionMsg), null);
-        }
-
-        // Forward to every link except the sender; the mesh is a tree, so everyone gets it once
-        function forwardToLinks(data, exceptDc) {
-            openLinks().forEach(link => {
-                if (link.dc === exceptDc) return;
-                try { link.dc.send(data); } catch (e) {}
-            });
-        }
-
-        // Connections are replaced make-before-break: a working link stays until its replacement opens
-        var CONNECT_TIMEOUT_MS = 30000;   // signaling can be slow when the server is busy
-        window.meshHostId = null;      // non-host: peerid meshConn is connected to
-        window.pendingConn = null;     // non-host: {pc, dc, hostId} being set up
-        window.hostPending = {};       // host: peerid -> pc being set up
-
-        function closeMeshConnectionTo(peerid) {
-            if (window.hostConns[peerid]) {
-                try { window.hostConns[peerid].close(); } catch(e) {}
-                delete window.hostConns[peerid];
-            }
-            delete window.hostChannels[peerid];
-        }
-
-        function dropActiveHostLink() {
-            if (window.meshConn) {
-                try { window.meshConn.close(); } catch(e) {}
-            }
-            window.meshConn = null;
-            window.meshChannel = null;
-            window.meshHostId = null;
-            window.upstreamTrusted = false;
-        }
-
-        // Failed attempts back off (10s, 20s, 40s ... 10 min) so an unreachable host isn't re-signaled on every room update
-        window.connectFailures = 0;
-        window.nextConnectAt = 0;
-        window.backoffHost = null;
-        function noteConnectFailure(hostId) {
-            window.connectFailures = (window.backoffHost === hostId) ? window.connectFailures + 1 : 1;
-            window.backoffHost = hostId;
-            var delay = Math.min(10000 * Math.pow(2, window.connectFailures - 1), 10 * 60 * 1000) * (0.75 + Math.random() * 0.5);
-            window.nextConnectAt = Date.now() + delay;
-            console.warn("Connection to host " + hostId.slice(0, 8) + " failed; next try in " + Math.round(delay / 1000) + "s");
-            setTimeout(reElectHost, delay + 50);
-        }
-
-        function connectToHost(host) {
-            if (window.leftRoom) return;
-            if (!host || host.peerid === window.peerid) return;
-            if (window.backoffHost === host.peerid && Date.now() < window.nextConnectAt) return;
-            if (window.pendingConn) {
-                if (window.pendingConn.hostId === host.peerid) return;   // already on it
-                try { window.pendingConn.pc.close(); } catch(e) {}
-                window.pendingConn = null;
-            }
-            // signaling to/from the host arrives over our own SSE
-            resumeOwnSSE("connecting to host");
-            var pc = new RTCPeerConnection({iceServers: window.iceServers});
-            var dc = pc.createDataChannel("queup-mesh");
-            var attempt = {pc: pc, dc: dc, hostId: host.peerid};
-            window.pendingConn = attempt;
-            dc.onopen = () => {
-                if (window.pendingConn !== attempt) { try { pc.close(); } catch(e) {} return; }
-                // the replacement is up: only now let go of the old link
-                if (window.meshConn && window.meshConn !== pc) {
-                    try { window.meshConn.close(); } catch(e) {}
-                }
-                window.pendingConn = null;
-                window.meshConn = pc;
-                window.meshChannel = dc;
-                window.meshHostId = host.peerid;
-                window.connectFailures = 0;
-                window.backoffHost = null;
-                window.upstreamCannotServe = false;   // a new upstream link
-                // only an owner's tab is trusted to relay room state (judged from our own server data)
-                var upstream = window.knownPeers.find(p => p.peerid === host.peerid);
-                window.upstreamTrusted = !!(upstream && upstream.owner);
-                updateOfflineBadge();
-            };
-            dc.onclose = () => {
-                if (window.pendingConn === attempt) window.pendingConn = null;
-                if (window.meshChannel !== dc) return;
-                window.meshConn = null;
-                window.meshChannel = null;
-                window.meshHostId = null;
-                window.upstreamTrusted = false;
-                resumeOwnSSE("lost connection to host");
-                updateOfflineBadge();
-                reElectHost();
-            };
-            dc.onmessage = (e) => {
-                // a replaced connection's late messages aren't from our host anymore
-                if (window.meshChannel !== dc) return;
-                var msg;
-                try { msg = JSON.parse(e.data); } catch (err) { return; }
-                handleMeshMessage(msg);
-                // still serving peers of our own while switching hosts: pass it on
-                if (Object.keys(window.hostChannels).length) forwardToLinks(e.data, dc);
-            };
-            pc.onicecandidate = (e) => {
-                if (e.candidate) sendSignal(host.peerid, "ice", e.candidate.toJSON());
-            };
-            pc.onconnectionstatechange = () => {
-                // Only give up on failed connections; 'disconnected' often recovers
-                if (!["failed", "closed"].includes(pc.connectionState)) return;
-                if (window.pendingConn === attempt) {
-                    window.pendingConn = null;
-                    if (pc.connectionState === "failed") noteConnectFailure(host.peerid);
-                }
-                if (window.meshConn === pc) {
-                    window.meshConn = null;
-                    window.meshChannel = null;
-                    window.meshHostId = null;
-                    window.upstreamTrusted = false;
-                    updateOfflineBadge();
-                    reElectHost();
-                }
-            };
-            pc.createOffer().then(offer => {
-                pc.setLocalDescription(offer);
-                sendSignal(host.peerid, "offer", {sdp: offer.sdp, type: offer.type});
-            });
-            setTimeout(() => {
-                if (window.pendingConn !== attempt) return;
-                // didn't come up: drop just this attempt; any working link stays
-                window.pendingConn = null;
-                try { pc.close(); } catch(e) {}
-                noteConnectFailure(host.peerid);
-            }, CONNECT_TIMEOUT_MS);
-        }
-
-        function acceptIncomingPeer(fromPeerid, offerPayload) {
-            if (window.leftRoom) return;
-            // a peer re-offering keeps its current channel until the new one opens
-            if (window.hostPending[fromPeerid]) {
-                try { window.hostPending[fromPeerid].close(); } catch(e) {}
-            }
-            var pc = new RTCPeerConnection({iceServers: window.iceServers});
-            window.hostPending[fromPeerid] = pc;
-            pc.ondatachannel = (e) => {
-                var dc = e.channel;
-                dc.onopen = () => {
-                    if (window.hostPending[fromPeerid] !== pc) { try { pc.close(); } catch(e) {} return; }
-                    delete window.hostPending[fromPeerid];
-                    if (window.hostConns[fromPeerid] && window.hostConns[fromPeerid] !== pc) {
-                        try { window.hostConns[fromPeerid].close(); } catch(e) {}
-                    }
-                    window.hostConns[fromPeerid] = pc;
-                    window.hostChannels[fromPeerid] = dc;
-                    // peers now connect to us: a link we still had to a previous host is moot
-                    if (window.amIHost && window.meshConn) dropActiveHostLink();
-                    updateOfflineBadge();
-                    broadcastMeshInfo();
-                    // the current room state lets the new peer hand off its SSE right away
-                    if (window.serverJSON && window.sseDownSince === null) sendPayloadTo(dc, window.serverJSON);
-                };
-                dc.onclose = () => {
-                    if (window.hostChannels[fromPeerid] !== dc) return;
-                    delete window.hostConns[fromPeerid];
-                    delete window.hostChannels[fromPeerid];
-                    updateOfflineBadge();
-                    broadcastMeshInfo();
-                };
-                dc.onmessage = (ev) => {
-                    if (window.hostChannels[fromPeerid] !== dc) return;
-                    var msg;
-                    try { msg = JSON.parse(ev.data); } catch (e) { return; }
-                    if (!acceptFromPeer(msg, fromPeerid)) {
-                        // a peer that synced before us reports its results; expected, not suspicious
-                        if (!(msg && ["syncack", "meshinfo"].includes(msg.type))) console.warn("dropped mesh message from", fromPeerid, msg && msg.type);
-                        return;
-                    }
-                    handleMeshMessage(msg);
-                    // Fan out to every other link
-                    forwardToLinks(ev.data, dc);
-                };
-            };
-            pc.onicecandidate = (e) => {
-                if (e.candidate) sendSignal(fromPeerid, "ice", e.candidate.toJSON());
-            };
-            pc.onconnectionstatechange = () => {
-                if (!["failed", "closed"].includes(pc.connectionState)) return;
-                if (window.hostPending[fromPeerid] === pc) delete window.hostPending[fromPeerid];
-                if (window.hostConns[fromPeerid] === pc) {
-                    delete window.hostConns[fromPeerid];
-                    delete window.hostChannels[fromPeerid];
-                    updateOfflineBadge();
-                }
-            };
-            setTimeout(() => {
-                if (window.hostPending[fromPeerid] !== pc) return;
-                delete window.hostPending[fromPeerid];
-                try { pc.close(); } catch(e) {}
-            }, CONNECT_TIMEOUT_MS + 5000);
-            pc.setRemoteDescription({type: offerPayload.type, sdp: offerPayload.sdp})
-                .then(() => pc.createAnswer())
-                .then(answer => {
-                    pc.setLocalDescription(answer);
-                    sendSignal(fromPeerid, "answer", {sdp: answer.sdp, type: answer.type});
-                })
-                .catch(err => console.error("Failed to accept incoming peer:", err));
-        }
-
-        function handleSignal(sig) {
-            var from = sig.from, type = sig.type, payload = sig.payload;
-            if (window.amIHost && type === "offer") {
-                acceptIncomingPeer(from, payload);
-            }
-            else if (type === "ice" && (window.hostPending[from] || window.hostConns[from])) {
-                // ICE after a (re)offer belongs to the connection being set up
-                (window.hostPending[from] || window.hostConns[from]).addIceCandidate(payload).catch(() => {});
-            }
-            else if (window.pendingConn && window.pendingConn.hostId === from) {
-                var pc = window.pendingConn.pc;
-                if (type === "answer") pc.setRemoteDescription({type: payload.type, sdp: payload.sdp}).catch(() => {});
-                else if (type === "ice") pc.addIceCandidate(payload).catch(() => {});
+            if (actionMsg && actionMsg.type === "offlineaction" && window.relay && window.relayOpen) {
+                try { window.relay.send(JSON.stringify({type: "envelope", env: actionMsg})); } catch (e) {}
             }
         }
 
-        function reElectHost() {
-            // Wait for ICE servers; initMesh() calls this again once they arrive
-            if (!window.iceServers) return;
-            // No new connections can be signaled during an outage, so keep the current topology
-            if (window.sseDownSince !== null && meshConnected()) { updateOfflineBadge(); return; }
-            var newHost = electHost(window.knownPeers);
-            // Don't tear down a working link over an empty peers snapshot
-            if (!newHost && meshConnected()) return;
-            window.currentHost = newHost;
-            window.amIHost = !!(newHost && newHost.peerid === window.peerid);
-            if (window.amIHost) {
-                resumeOwnSSE("became host");
-                // a link to a previous host stays until a peer connects to us
-            }
-            else if (newHost) {
-                var linked = window.meshChannel && window.meshChannel.readyState === "open" &&
-                    window.meshHostId === newHost.peerid;
-                if (!linked) connectToHost(newHost);   // no-op if already attempting it
-            }
-            updateOfflineBadge();
-        }
-
-        // Per-browser setting; when off the tab never joins the mesh and talks only to the server
+        // Per-browser setting; when off the tab never uses the relay and talks only to the server
         function p2pEnabled() {
             return prefGet("queup_p2p") !== "off";
         }
 
         function updateP2PButton() {
             var btn = document.getElementById("p2ptoggle");
-            if (btn) btn.innerHTML = "Peer-to-peer: " + (p2pEnabled() ? "On" : "Off");
+            if (btn) btn.innerHTML = "Backup relay: " + (p2pEnabled() ? "On" : "Off");
         }
 
         function toggleP2P() {
             var want = p2pEnabled() ? "off" : "on";
             prefSet("queup_p2p", want);
             if (prefGet("queup_p2p") !== want) {
-                alert("This browser isn't letting QueUp save settings, so peer-to-peer can't be turned off here.");
+                alert("This browser isn't letting QueUp save settings, so the backup relay can't be turned off here.");
                 return;
             }
             updateP2PButton();
@@ -1146,59 +949,42 @@
         }
 
         async function initMesh() {
-            if (!window.RTCPeerConnection || !p2pEnabled()) return;  // opportunistic only, and optional
+            if (!p2pEnabled()) return;
             window.peerid = crypto.randomUUID();
             try {
-                // peerjoin also returns ICE servers, this tab's signing key and the server time
-                var r = await silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=${MESH_VERSION}`);
+                // peerjoin returns this tab's signing key, the server time and a relay token
+                var r = await silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=6`);
                 var j = await r.json();
-                window.iceServers = j.iceServers;
                 noteServerTime(j.servertime);
                 if (j.signkey) await importSignKey(j.signkey);
+                window.relayInfo = j.relay || null;
             }
             catch (err) {
-                console.error("peerjoin failed, mesh unavailable this session:", err);
+                console.error("peerjoin failed, relay unavailable this session:", err);
+            }
+            if (!window.relayInfo) {
+                // no relay set up (or no answer): our own stream right away
+                if (!window.evtSource && !window.leftRoom && !window.idlePaused) createEventSource();
                 return;
             }
-            reElectHost();  // catch up on any peers-update SSE already delivered
-            window.heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
-            // TURN credentials last 4h; peerjoin hands out fresh ones
+            connectRelay();
+            // relay tokens last 6h; peerjoin hands out fresh ones
             window.presenceTimer = setInterval(refreshPresence, 60 * 60 * 1000);
         }
 
-        // All open channels: down to our peers and up to our host (both, briefly, during a host change)
-        function openLinks() {
-            var links = Object.keys(window.hostChannels)
-                .filter(pid => window.hostChannels[pid].readyState === "open")
-                .map(pid => ({dc: window.hostChannels[pid], peerid: pid, upstream: false}));
-            if (window.meshChannel && window.meshChannel.readyState === "open") {
-                links.push({dc: window.meshChannel, peerid: window.meshHostId, upstream: true});
-            }
-            return links;
-        }
-
         function meshConnected() {
-            return openLinks().length > 0;
+            return !!(window.relay && window.relayOpen);
         }
 
-        // Relay actions over the mesh once an outage is confirmed
+        // Relay actions once an outage is confirmed
         function shouldUseMeshRelay() {
-            // Signed out: peers can sync our signed actions for us
+            // Signed out: other tabs can sync our signed actions for us
             return (window.confirmedOutage || window.signedOut) && meshConnected();
         }
 
-        // Number of other tabs in the mesh; the host announces the total so every tab agrees
-        window.meshPeerCount = 0;
+        // Other tabs in this room on the relay
         function meshUserCount() {
-            var downstream = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open").length;
-            if (downstream) return openLinks().length;
-            if (window.meshChannel && window.meshChannel.readyState === "open") return Math.max(1, window.meshPeerCount);
-            return 0;
-        }
-
-        function broadcastMeshInfo() {
-            var downstream = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open").length;
-            if (downstream) sendMeshAction({type: "meshinfo", peers: downstream});
+            return meshConnected() ? Math.max(0, window.relayCount - 1) : 0;
         }
 
         function updateOfflineBadge() {
@@ -1237,10 +1023,10 @@
         function explainOfflineBadge() {
             var mode = document.documentElement.getAttribute("offlinemode");
             if (mode == "live") {
-                alert("You're connected directly to " + meshUserCount() + " other " + (meshUserCount() === 1 ? "user" : "users") + " in this room. If the server that hosts QueUp goes down, the queue keeps working between you over WebRTC.");
+                alert("You're connected to " + meshUserCount() + " other " + (meshUserCount() === 1 ? "user" : "users") + " in this room. If the server that hosts QueUp goes down, the queue keeps working between you through the backup relay.");
             }
             else if (mode == "mesh") {
-                alert("The server that hosts QueUp is down, so we've switched to WebRTC to maintain the queue.  As long as two or more users remain connected, the queue will not lose data when the server comes back up.");
+                alert("The server that hosts QueUp is down, so we've switched to the backup relay to maintain the queue.  As long as two or more users remain connected, the queue will not lose data when the server comes back up.");
             }
             else if (mode == "syncing") {
                 alert("The changes made to the queue while the server was down are being synchronized back to the server.  Once this is complete, the queue's operation will continue as normal.");
@@ -1302,12 +1088,14 @@
                 document.getElementById("toggleroomlock").innerHTML = "Lock Room";
             addRoom(roomname, roomsubtitle);
             genRoom(roomname, JSON.parse(j));
+            // the room is drawn: put away the join panel now, not when an SSE stream opens (tabs on the relay never open one)
+            document.getElementsByClassName("queueoverlay")[0].style.display = "none";
             window.roomname = roomname;
             window.leftRoom = false;
             window.lastPayloadServerTime = 0;
-            initMesh();  // sets window.peerid synchronously before createEventSource() reads it
+            initMesh();  // sets window.peerid synchronously before anything reads it
             loadJournal();
-            createEventSource();
+            startRoomUpdates();
         }
         // Watchdog: while down, ping a static file with backoff before reconnecting SSE
         window.PING_INTERVAL_MIN = 5000;
@@ -1346,7 +1134,7 @@
             if (firstFailure) {
                 // sseupdate cycles every 60s, so retry once quickly before treating this as an outage
                 setTimeout(() => {
-                    if (window.sseDownSince !== null && !window.relyingOnHost && !window.leftRoom) {
+                    if (window.sseDownSince !== null && !window.leftRoom) {
                         createEventSource();
                     }
                 }, 500);
@@ -1355,14 +1143,12 @@
                 // The quick retry failed too: this is a real outage
                 window.confirmedOutage = true;
                 startConnectivityWatchdog();
-                announceOutageToPeers();
+                hintOutageOverRelay();
             }
         }
 
-        // One of our own requests failed while peers are connected: confirm the outage immediately
+        // One of our own requests failed while on the relay: confirm the outage immediately
         function confirmOutageNow() {
-            // Manage our own server connection again
-            resumeOwnSSE("own request failed");
             if (!window.confirmedOutage) {
                 // a new outage: check back quickly, not at the previous one's backoff
                 window.pingIntervalMs = window.PING_INTERVAL_MIN;
@@ -1373,17 +1159,52 @@
             window.confirmedOutage = true;
             updateOfflineBadge();
             startConnectivityWatchdog();
-            announceOutageToPeers();
+            hintOutageOverRelay();
+        }
+
+        // Tabs on the relay have no SSE of their own to notice an outage: tell them to check.
+        // The hint is unauthenticated, so receivers only ever act on their own ping failing.
+        function hintOutageOverRelay() {
+            if (window.relay && window.relayOpen && !window.outageHinted) {
+                window.outageHinted = true;
+                try { window.relay.send(JSON.stringify({type: "outage"})); } catch (e) {}
+            }
+        }
+
+        // Hints come from other users' tabs, so a flood of them may cost each tab at most one ping per 30s
+        window.lastHintCheck = 0;
+        async function checkHintedOutage() {
+            if (window.sseDownSince !== null || window.checkingHint || window.leftRoom) return;
+            if (Date.now() - window.lastHintCheck < 30000) return;
+            window.lastHintCheck = Date.now();
+            window.checkingHint = true;
+            var alive = await pingServer();
+            window.checkingHint = false;
+            if (!alive && window.sseDownSince === null) confirmOutageNow();
         }
 
         async function connectivityWatchdogTick() {
-            if (window.disableErrors || window.leftRoom || window.sseDownSince === null || window.relyingOnHost || window.signedOut) {
+            if (window.disableErrors || window.leftRoom || window.sseDownSince === null || window.signedOut) {
                 // Tearing down or reconnected: stop pinging
                 window.pingTimer = null;
                 return;
             }
+            // one check at a time: relayed updates can start one while a scheduled one is still waiting
+            if (window.pingChecking) return;
+            window.pingChecking = true;
             var alive = await pingServer();
+            window.pingChecking = false;
             if (alive) {
+                if (window.relyingOnRelay) {
+                    // room updates still come over the relay: just mark the server as back
+                    window.sseDownSince = null;
+                    window.confirmedOutage = false;
+                    window.outageHinted = false;
+                    window.pingTimer = null;
+                    updateOfflineBadge();
+                    scheduleOfflineSync();
+                    return;
+                }
                 // Server reachable again: try the real reconnect
                 createEventSource();
                 window.pingTimer = setTimeout(connectivityWatchdogTick, window.PING_INTERVAL_MIN);
@@ -1405,15 +1226,17 @@
                 try { window.evtSource.close(); } catch(e) {}
             }
             sendLeaveBeacon();
+            closeRelay();
         });
         // restored from the back/forward cache: we said goodbye on the way out
         window.addEventListener("pageshow", (e) => {
             if (!e.persisted || !window.peerid || window.leftRoom) return;
             refreshPresence();
-            if (!window.evtSource && !window.relyingOnHost) createEventSource();
+            startRoomUpdates();
+            connectRelay();
         });
 
-        // Tell the server this tab left, so it stops being elected host
+        // Tell the server this tab left
         function sendLeaveBeacon() {
             if (!window.peerid || !window.roomname || window.leftRoom) return;
             var url = `roomd.wsgi?setup=true&action=peerleave&room=${window.roomname}&peerid=${window.peerid}`;
@@ -1426,12 +1249,7 @@
             }
         }
 
-        // Non-host tabs get room updates from the host and close their own SSE (see P2P.md)
-        window.relyingOnHost = false;
-        window.lastRelayAt = 0;
-        window.relayWatchdog = null;
-        window.RELAY_STALE_MS = 90000;   // host's own SSE recycles every 60s, relaying each time
-
+        // Room updates come over the relay when it's open, otherwise over this tab's own SSE (see P2P.md)
         window.lastPayloadServerTime = 0;
         function applyServerPayload(json, fromOwnSSE) {
             // Ignore payloads older than the one shown
@@ -1440,6 +1258,7 @@
                 window.lastPayloadServerTime = json.servertime;
             }
             window.serverJSON = json;
+            window.payloadCount++;
             noteServerTime(json.servertime);
             console.log(json);
             // an empty response means the room was deleted.
@@ -1449,139 +1268,33 @@
                 return;
             }
             dropAckedEntries(json.servertime);
+            dropSupersededRelayed(json.watermarks);
             renderRoom();
             // anything still pending (ours or relayed) gets another go
             if (window.sseDownSince === null) scheduleOfflineSync();
-            if (json.peers) {
-                window.knownPeers = json.peers;
-                reElectHost();
-            }
-            // signals are addressed to this tab's own SSE only; relayed copies have none
-            if (fromOwnSSE && json.signals && json.signals.length) {
-                json.signals.forEach(handleSignal);
-            }
             // disableOperations is a hacky way to "rate limit" students from slamming the server
             // with operations.
             // this is INTENDED to be coupled with server responding with HTTP 429s to students
             // who submit too many requests per second (cannot possibly be more than 3 requests per second).
             window.disableOperations = false;
-            // Relay room updates to peers connected to us
-            if (fromOwnSSE) {
-                Object.values(window.hostChannels).forEach(dc => sendPayloadTo(dc, json));
-            }
         }
 
-        function sendPayloadTo(dc, json) {
-            if (dc.readyState !== "open") return;
-            var copy = Object.assign({}, json);
-            delete copy.signals;
-            try { dc.send(JSON.stringify({type: "payload", room: window.roomname, data: copy})); }
-            catch (e) { console.error("could not relay room state:", e); }
-        }
-
-        function handleRelayedPayload(msg) {
-            if (window.amIHost || window.leftRoom || msg.room !== window.roomname || !window.upstreamTrusted) return;
-            var data = sanitizeRelayedPayload(msg.data);
-            if (!data) return;
-            window.lastRelayAt = Date.now();
-            if (window.relyingOnHost && window.sseDownSince !== null) {
-                // the host reached the server again
-                window.sseDownSince = null;
-                window.confirmedOutage = false;
-                updateOfflineBadge();
-                scheduleOfflineSync();
-                sendHeartbeat();     // covered by an owner host, or our own (rejoins if expired)
-            }
-            applyServerPayload(data, false);
-            maybeHandOffSSE();
-        }
-
-        function maybeHandOffSSE() {
-            if (window.amIHost || window.relyingOnHost || window.leftRoom || window.upstreamCannotServe || !window.upstreamTrusted) return;
-            if (!(window.meshChannel && window.meshChannel.readyState === "open")) return;
-            if (window.sseDownSince !== null) return;          // our own connection is unsettled
-            if (Date.now() - window.lastRelayAt > 5000) return; // need proof the host is relaying
-            window.relyingOnHost = true;
-            if (window.evtSource) {
-                try { window.evtSource.close(); } catch (e) {}
-                window.evtSource = null;
-            }
-            startRelayWatchdog();
-            console.log("Room updates now come from the host; closed own SSE.");
-        }
-
-        function resumeOwnSSE(reason) {
-            if (!window.relyingOnHost) return;
-            window.relyingOnHost = false;
-            stopRelayWatchdog();
-            // the host may have been heartbeating for us until now
-            sendHeartbeat();
-            console.log("Reopening own SSE:", reason);
-            if (!window.evtSource && !window.disableErrors && !window.leftRoom) createEventSource();
-        }
-
-        function startRelayWatchdog() {
-            stopRelayWatchdog();
-            window.relayWatchdog = setInterval(() => {
-                if (!window.relyingOnHost) return stopRelayWatchdog();
-                // during an outage the host has nothing to relay; the mesh is what matters then
-                if (window.sseDownSince !== null) return;
-                if (Date.now() - window.lastRelayAt > window.RELAY_STALE_MS) resumeOwnSSE("host stopped relaying");
-            }, 5000);
-        }
-
-        function stopRelayWatchdog() {
-            if (window.relayWatchdog) clearInterval(window.relayWatchdog);
-            window.relayWatchdog = null;
-        }
-
-        function announceOutageToPeers() {
-            // a signed-out tab can't tell whether the server is down at all
-            if (window.signedOut) return;
-            if (Object.keys(window.hostChannels).length) sendMeshAction({type: "serverdown"});
-        }
-
-        // Signed out (401): tell peers to use their own connections, and stay on as a relay
+        // Signed out (401): other tabs on the relay can still sync our signed actions
         window.signedOut = false;
         function noteSignedOut() {
             if (window.signedOut) return;
             window.signedOut = true;
             console.warn("Signed out (401): reload the page to sign in again");
-            forwardToLinks(JSON.stringify({type: "hostlost"}), null);
             updateOfflineBadge();
         }
 
-        // Heartbeat: an owner host covers its peers in one request; others send their own
-        var HEARTBEAT_MS = 45000;
-        function coveredByHost() {
-            // the tab we're actually linked to, not whoever the election names
-            var upstream = window.knownPeers.find(p => p.peerid === window.meshHostId);
-            return window.relyingOnHost && !window.upstreamCannotServe && !!(upstream && upstream.owner) &&
-                Date.now() - window.lastRelayAt < HEARTBEAT_MS + 15000;
-        }
-
-        function sendHeartbeat() {
-            if (!window.peerid || window.leftRoom || window.signedOut || coveredByHost()) return;
-            var url = `roomd.wsgi?setup=true&action=peerheartbeat&room=${window.roomname}&peerid=${window.peerid}`;
-            var options;
-            if (window.is_owner) {
-                var peers = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open");
-                if (peers.length) {
-                    options = {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({peers: peers})};
-                }
-            }
-            silentFetch(url, options)
-                .then(r => r.json())
-                .then(j => { if (j.status === "rejoin") refreshPresence(); })
-                .catch(() => {});
-        }
-
+        // Fresh relay token before the old one expires (a reconnect uses whichever is newest)
         function refreshPresence() {
             if (!window.peerid || window.leftRoom) return;
-            silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=${MESH_VERSION}`)
+            silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=6`)
                 .then(r => r.json())
                 .then(j => {
-                    if (j.iceServers) window.iceServers = j.iceServers;
+                    if (j.relay) window.relayInfo = j.relay;
                     noteServerTime(j.servertime);
                     if (j.signkey && !window.signKey) importSignKey(j.signkey);
                 })
@@ -1599,21 +1312,17 @@
             if (Date.now() - (window.lastActivity || Date.now()) >= window.IDLE_LIMIT_MS) pauseForInactivity();
         }
 
-        // Stop everything live (server connection, mesh, timers) without leaving any queue; Reconnect reloads the room
+        // Stop everything live (server connection, relay, timers) without leaving any queue; Reconnect reloads the room
         function pauseForInactivity() {
             window.idlePaused = true;
             window.disableErrors = true;
             sendLeaveBeacon();
             window.leftRoom = true;
             if (window.evtSource) { try { window.evtSource.close(); } catch (e) {} window.evtSource = null; }
-            [window.activityCheck, window.heartbeatTimer, window.presenceTimer, window.relayWatchdog].forEach(t => clearInterval(t));
-            [window.pingTimer, window.syncTimer, window.signalFlushTimer].forEach(t => clearTimeout(t));
-            window.pingTimer = window.syncTimer = window.signalFlushTimer = null;
-            window.relyingOnHost = false;
-            var conns = [window.meshConn, window.pendingConn && window.pendingConn.pc].concat(Object.values(window.hostConns), Object.values(window.hostPending));
-            conns.forEach(pc => { if (pc) { try { pc.close(); } catch (e) {} } });
-            window.meshConn = window.meshChannel = window.pendingConn = null;
-            window.hostConns = {}; window.hostChannels = {}; window.hostPending = {};
+            [window.activityCheck, window.presenceTimer].forEach(t => clearInterval(t));
+            [window.pingTimer, window.syncTimer].forEach(t => clearTimeout(t));
+            window.pingTimer = window.syncTimer = null;
+            closeRelay();
             document.documentElement.setAttribute("offlinemode", "none");
             var banner = document.getElementById("idlebanner");
             if (banner) banner.style.display = "flex";
@@ -1627,7 +1336,6 @@
             if (window.idlePaused) return;
             if (typeof(EventSource) !== "undefined") {
                 var sseUrl = "roomd.wsgi?sseupdate=true&room=" + window.roomname;
-                if (window.peerid) sseUrl += "&peerid=" + window.peerid + "&light=1";
                 if (window.evtSource) {
                     try { window.evtSource.close(); } catch(e) {}
                 }
@@ -1637,23 +1345,14 @@
                     document.getElementsByClassName("queueoverlay")[0].style.display = "none";
                     var wasOutage = window.confirmedOutage;
                     window.pingIntervalMs = window.PING_INTERVAL_MIN;
-                    var downFor = window.sseDownSince === null ? 0 : Date.now() - window.sseDownSince;
                     window.sseDownSince = null;
                     window.confirmedOutage = false;
+                    window.outageHinted = false;
                     updateOfflineBadge();
-                    if (wasOutage) sendMeshAction({type: "serverback"});
                     scheduleOfflineSync();
-                    // Refresh presence only after an outage long enough for it to expire
-                    if (wasOutage || downFor > 60000) sendHeartbeat();
                 };
                 window.evtSource.onmessage = function(event) {
                     var json = JSON.parse(event.data);
-                    if (json.signalsOnly) {
-                        // just signaling for this tab: no room state to render or relay
-                        noteServerTime(json.servertime);
-                        (json.signals || []).forEach(handleSignal);
-                        return;
-                    }
                     applyServerPayload(json, true);
                 };
                 window.evtSource.onerror = async () => {

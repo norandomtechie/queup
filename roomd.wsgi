@@ -4,9 +4,6 @@ import os
 import json
 import re
 import sys
-import hmac
-import hashlib
-import base64
 
 from time import time
 from functools import reduce
@@ -31,26 +28,10 @@ from lib.methods import *
 from lib.ratelimiter import *
 from lib.wsgidefs import *
 from lib.privatepath import resolve_private_path
-from lib.offlinesync import issue_peer_key, apply_offline_batch, MAX_BATCH, get_peer_records, mark_present, MAX_HEARTBEAT_BATCH
+from lib.offlinesync import issue_peer_key, apply_offline_batch, MAX_BATCH, get_peer_records, mark_present
+import lib.relay
 import lib.methods
 import lib.lock
-
-# Peer-to-peer (see P2P.md)
-def mint_ice_servers(user):
-    """Time-limited TURN credentials (coturn use-auth-secret) plus a public STUN server."""
-    secret = open(private + 'turn_secret').read().strip()
-    expiry = int(time()) + 4 * 3600  # 4h TTL
-    turn_user = f"{expiry}:{user}"
-    dig = hmac.new(secret.encode(), turn_user.encode(), hashlib.sha1).digest()
-    turn_pass = base64.b64encode(dig).decode()
-    return [
-        {"urls": "stun:stun.l.google.com:19302"},
-        # UDP first, TCP for networks that block UDP
-        {"urls": "turn:verilog.ecn.purdue.edu:3478",
-         "username": turn_user, "credential": turn_pass},
-        {"urls": "turn:verilog.ecn.purdue.edu:3478?transport=tcp",
-         "username": turn_user, "credential": turn_pass}
-    ]
 
 def request_intent(query, user):
     """(click time capped at now, "user:opid") sent with queue actions; (None, None) from older clients."""
@@ -64,7 +45,35 @@ def request_intent(query, user):
 
 STALE_MSG = "[stale] A newer change was already made, so this older request was not applied."
 
+def room_payload(r, room):
+    """What every tab renders: queues, names, timer/broadcast, change times and server time."""
+    data = getusers("", room)
+    # Latest change time per user|queue, so clients can skip superseded pending actions
+    data["watermarks"] = {k.decode(): float(v) for k, v in r.hgetall("qwatermark"+room).items()}
+    data["servertime"] = time()
+    return data
+
+# Requests that can change what a room looks like; each successful one is pushed to the relay
+WRITE_ACTIONS = {"add", "del", "ren", "own", "delown", "setcool", "setsub", "lock", "unlock", "clear",
+                 "mark", "setperm", "tgl1q", "timer", "broadcast", "offlinesync"}
+
 def application(environ, start_response):
+    statuses = []
+    def capture(status, headers, exc_info=None):
+        statuses.append(status)
+        return start_response(status, headers, exc_info) if exc_info else start_response(status, headers)
+    result = handle_request(environ, capture)
+    try:
+        query = {k: v[0] for k, v in parse_qs(environ.get('QUERY_STRING', '')).items()}
+        if statuses and statuses[0].startswith("200") and query.get('action') in WRITE_ACTIONS and 'sseupdate' not in query:
+            room = query.get('room', '')
+            if re.match(ROOM_RGX, room):
+                lib.relay.publish(private, room, room_payload(rds, room) if rds.exists("room"+room) else {})
+    except Exception as e:
+        sys.stderr.write("relay publish failed: %r\n" % (e,))
+    return result
+
+def handle_request(environ, start_response):
     global ip, private, rds
 
     # Use the private dir of the tree serving this request (see lib/privatepath.py)
@@ -102,7 +111,7 @@ def application(environ, start_response):
         return ret_400(start_response, "Invalid room name " + room)
     
     action = query.get('action', '')
-    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast', 'turn', 'peerjoin', 'peerheartbeat', 'peerleave', 'signalsend', 'offlinesync']
+    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast', 'peerjoin', 'peerleave', 'offlinesync']
     if 'sseupdate' not in query and not (action in actions):
         return ret_400(start_response, "Invalid action " + action)
     setup = query.get('setup', '')
@@ -122,8 +131,8 @@ def application(environ, start_response):
             'sseupdate' in query,
             # add/del to a queue, allowed for non-owner
             (action in ['add', 'del'] and querychecked),
-            # TURN, presence and signaling: any room participant
-            action in ['turn', 'peerjoin', 'peerheartbeat', 'peerleave', 'signalsend'],
+            # joining the relay: any room participant
+            action in ['peerjoin', 'peerleave'],
             # Offline sync: authorized per envelope by signature (see lib/offlinesync.py)
             action == 'offlinesync',
         ]
@@ -152,11 +161,8 @@ def application(environ, start_response):
     will_broadcast = action == 'broadcast' and "room"+room in rooms
     ### END ADDED
 
-    # Peer-to-peer actions
-    will_turn = action == 'turn' and "room"+room in rooms
+    # Relay and offline actions
     will_peerjoin = action == 'peerjoin' and "room"+room in rooms
-    will_peerheartbeat = action == 'peerheartbeat' and "room"+room in rooms
-    will_signalsend = action == 'signalsend' and "room"+room in rooms
     will_peerleave = action == 'peerleave' and "room"+room in rooms
     will_offlinesync = action == 'offlinesync' and "room"+room in rooms
 
@@ -235,13 +241,7 @@ def application(environ, start_response):
                 return ret_400(start_response, str(e))
         ### END ADDED
 
-        # Peer-to-peer actions (see P2P.md)
-        elif will_turn:
-            # Any participant; peerjoin already returns ICE servers, so this is only for renewal
-            try:
-                return ret_json(start_response, json.dumps({"iceServers": mint_ice_servers(user)}))
-            except Exception as e:
-                return ret_400(start_response, str(e))
+        # Relay and offline actions (see P2P.md)
         elif will_peerjoin:
             # Any participant; is_owner is computed server-side
             peerid = query.get('peerid', '')
@@ -256,75 +256,12 @@ def application(environ, start_response):
                 signkey = issue_peer_key(room, peerid, user, version)
                 if signkey is None:
                     return ret_400(start_response, "peerid already in use")
-                records = get_peer_records(room, [peerid])
-                if mark_present(room, records, getowners(room)):
-                    rds.set("peerjoin"+room, "1", ex=5)
-                # ICE servers and server time ride along, so joining is one round trip
+                mark_present(room, get_peer_records(room, [peerid]), getowners(room))
+                # the relay token and server time ride along, so joining is one round trip
                 return ret_json(start_response, json.dumps({
-                    "status": "joined", "iceServers": mint_ice_servers(user),
-                    "signkey": signkey, "servertime": time()
+                    "status": "joined", "signkey": signkey, "servertime": time(),
+                    "relay": lib.relay.mint_token(private, room, user, is_owner)
                 }))
-            except Exception as e:
-                return ret_400(start_response, str(e))
-        elif will_peerheartbeat:
-            peerid = query.get('peerid', '')
-            if not re.match(PEERID_RGX, peerid):
-                return ret_400(start_response, "Invalid peerid")
-            try:
-                own = get_peer_records(room, [peerid])
-                if peerid not in own or own[peerid]["user"] != user:
-                    # never joined (or its record expired): the tab must peerjoin
-                    return ret_json(start_response, json.dumps({"status": "rejoin"}))
-                records = dict(own)
-                # An owner host may heartbeat for peers that joined themselves (see P2P.md)
-                covered = 0
-                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
-                if is_owner and 0 < length <= 64 * 1024:
-                    body = json.loads(environ['wsgi.input'].read(length).decode('utf-8', errors='replace'))
-                    others = [p for p in body.get('peers', []) if isinstance(p, str) and re.match(PEERID_RGX, p)]
-                    extra = get_peer_records(room, others[:MAX_HEARTBEAT_BATCH])
-                    covered = len(extra)
-                    records.update(extra)
-                # Only a (re)appearing peer triggers an SSE broadcast
-                if mark_present(room, records, getowners(room)):
-                    rds.set("peerjoin"+room, "1", ex=5)
-                return ret_json(start_response, json.dumps({"status": "ok", "covered": covered}))
-            except Exception as e:
-                return ret_400(start_response, str(e))
-        elif will_signalsend:
-            from_peerid = query.get('peerid', '')
-            if not re.match(PEERID_RGX, from_peerid):
-                return ret_400(start_response, "Invalid peerid")
-            # only the user who joined with this peerid may signal as it
-            rec = get_peer_records(room, [from_peerid]).get(from_peerid)
-            if rec is None or rec["user"] != user:
-                return ret_400(start_response, "Not your peer")
-            try:
-                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
-            except ValueError:
-                length = 0
-            body = environ['wsgi.input'].read(length).decode('utf-8', errors='replace') if length else ""
-            try:
-                payload = json.loads(body)
-                messages = payload.get('messages', [])
-                if not isinstance(messages, list) or len(messages) == 0:
-                    raise ValueError("messages must be a non-empty list")
-                by_target = {}
-                for m in messages:
-                    to_peerid = m.get('to', '')
-                    if not re.match(PEERID_RGX, to_peerid):
-                        raise ValueError("Invalid target peerid")
-                    if m.get('type') not in ('offer', 'answer', 'ice'):
-                        raise ValueError("Invalid message type")
-                    entry = {"from": from_peerid, "type": m['type'], "payload": m.get('payload', {})}
-                    by_target.setdefault(to_peerid, []).append(entry)
-                for to_peerid, entries in by_target.items():
-                    existing = rds.hget("signal"+room, to_peerid)
-                    current = json.loads(existing) if existing else []
-                    current.extend(entries)
-                    rds.hset("signal"+room, to_peerid, json.dumps(current))
-                rds.expire("signal"+room, 120)
-                return ret_ok(start_response, "sent")
             except Exception as e:
                 return ret_400(start_response, str(e))
         elif will_peerleave:
@@ -336,10 +273,8 @@ def application(environ, start_response):
                 rec = get_peer_records(room, [peerid]).get(peerid)
                 if rec is None or rec["user"] != user:
                     return ret_400(start_response, "Not your peer")
-                removed = rds.zrem("peers"+room, peerid)
+                rds.zrem("peers"+room, peerid)
                 rds.hdel("peermeta"+room, peerid)
-                if removed:
-                    rds.set("peerjoin"+room, "1", ex=5)   # others re-elect now
                 return ret_ok(start_response, "left")
             except Exception as e:
                 return ret_400(start_response, str(e))
@@ -497,7 +432,8 @@ def application(environ, start_response):
                 sys.stderr.write(traceback.format_exc())
                 return ret_ok(start_response, str(e))
         elif will_chk:
-            return ret_ok(start_response, json.dumps(getusers("", room)))
+            # full=1: the same payload the relay and SSE carry, for tabs re-checking the server
+            return ret_ok(start_response, json.dumps(room_payload(rds, room) if query.get('full') == '1' else getusers("", room)))
         else:
             return ret_400(start_response, "Invalid action.")
     elif querychecked:
@@ -590,13 +526,6 @@ def sseupdate(environ, start_response):
         sys.stderr.write("Room %s not found in database\n" % room)
         return ret_400(start_response, "Room not found in database.")
 
-    # This connection's peer id, if any
-    peerid = query.get('peerid', '')
-    if peerid and not re.match(PEERID_RGX, peerid):
-        peerid = ''
-    sse_user = environ.get('REMOTE_USER', '').lower()
-    # clients that understand signal-only updates ask for them (older pages always get full room state)
-    light = query.get('light', '') == '1'
 
     start_response('200 OK', [
         ('Content-Type', 'text/event-stream;charset=utf-8'),
@@ -607,38 +536,10 @@ def sseupdate(environ, start_response):
     # this time, add a timeout so it doesn't hang forever
     rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip(), socket_timeout=30)
 
-    # Room state plus mesh presence and this peer's pending signals, read on their own connection
+    # Room state, read on its own connection
     payload_rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())
-    def take_signals():
-        """This peer's pending signals, removed once read, only for the user who joined with that peer id."""
-        owner_rec = payload_rds.hget("peerkeys"+room, peerid) if peerid else None
-        if not (owner_rec and json.loads(owner_rec).get("user") == sse_user):
-            return []
-        sig_raw = payload_rds.hget("signal"+room, peerid)
-        if not sig_raw:
-            return []
-        payload_rds.hdel("signal"+room, peerid)
-        return json.loads(sig_raw)
-
     def build_payload():
-        data = getusers("", room)
-        # Only peers that heartbeated in the last 90s (the key's TTL can't expire single members)
-        peers_raw = payload_rds.zrangebyscore("peers"+room, time() - 90, "+inf")
-        meta_raw = payload_rds.hgetall("peermeta"+room)
-        peers = []
-        for p in peers_raw:
-            pid = p.decode() if isinstance(p, bytes) else p
-            m = meta_raw.get(p) or meta_raw.get(pid.encode() if isinstance(pid, str) else pid)
-            if m:
-                meta = json.loads(m)
-                meta["peerid"] = pid
-                peers.append(meta)
-        data["peers"] = peers
-        data["signals"] = take_signals()
-        # Latest change time per user|queue, so clients can skip superseded pending actions
-        data["watermarks"] = {k.decode(): float(v) for k, v in payload_rds.hgetall("qwatermark"+room).items()}
-        data["servertime"] = time()
-        return data
+        return room_payload(payload_rds, room)
 
     yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
     start_time = time()
@@ -662,19 +563,11 @@ def sseupdate(environ, start_response):
                     continue
                 cmd = m.next_command()['command'].lower()
                 is_room_change = "del room"+room.lower() in cmd or "set room"+room.lower() in cmd
-                # Match only HSET for signals: MONITOR also sees every read, including our own
-                is_peerjoin = "peerjoin"+room.lower() in cmd
-                is_my_signal = peerid and cmd.startswith("hset signal"+room.lower()) and (peerid.lower() in cmd)
-                if is_room_change or is_peerjoin or is_my_signal:
+                if is_room_change:
                     start_time = time()
                     last_write = start_time
                     try:
-                        if light and is_my_signal and not (is_room_change or is_peerjoin):
-                            # only a signal arrived: skip rebuilding (and peers re-relaying) the whole room
-                            out = {"signalsOnly": True, "signals": take_signals(), "servertime": time()}
-                        else:
-                            out = build_payload()
-                        yield ("data: %s\n\n" % json.dumps(out)).encode()
+                        yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
                         #sys.stderr.write("DEBUG sseupdate: " + str(environ['REMOTE_USER']) + "," + str(room) + "," + str(os.getpid()) + "\n")
                     except GeneratorExit:
                         # Client disconnected: close normally instead of killing the worker
