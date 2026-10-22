@@ -7,6 +7,11 @@
 **/__pycache__/
 skip_rooms
 redis*
+turn*
+test_credentials*
 nodel*
 app*
 proc*
+ratelimit_bypass
+logview_admins
+!tests/turn_check.py
