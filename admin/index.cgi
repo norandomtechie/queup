@@ -3,13 +3,16 @@
 
 import os, io, sys, codecs, redis, re
 
-sys.path.append(os.environ['CONTEXT_DOCUMENT_ROOT'] + '/queup')
+# Import sibling modules relative to this script
+_admin_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(_admin_dir))
 from lib.lock import *
 from lib.methods import ROOM_RGX, getowners, getsections, getrooms
 from lib.ratelimiter import *
 from lib.wsgidefs import *
+from lib.privatepath import resolve_private_path
 
-sys.path.append(os.environ['CONTEXT_DOCUMENT_ROOT'] + '/queup/admin')
+sys.path.append(_admin_dir)
 from alib.methods import *
 
 def getsections(room):
@@ -37,7 +40,14 @@ if "@purdue.edu" in username:
 # enables unicode printing
 sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
 
-private = os.environ['CONTEXT_DOCUMENT_ROOT'] + "../private/queup/"
+# Use the private dir of the tree serving this request
+private = resolve_private_path(os.environ)
+import lib.methods
+import lib.lock
+import alib.methods
+lib.methods.set_private_path(private)
+lib.lock.set_private_path(private)
+alib.methods.set_private_path(private)
 
 try:
     rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())

@@ -2,11 +2,16 @@ import os
 from json import loads, dumps
 import csv
 
-# for local testing
+# Fallback only; see set_private_path()
 try:
     private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 except:
     private = os.environ['CONTEXT_DOCUMENT_ROOT'].replace('public_html', 'private') + 'queup/'
+
+def set_private_path(path):
+    """Point this module at the private dir of the tree serving this request."""
+    global private
+    private = path
 
 def sectiondata(room, data="", action="get"):
     if not os.path.exists(private + '/sections'):
@@ -71,11 +76,32 @@ def getsections(room):
         sections = loads(f.read())
     return sections
 
+# total field count for log codes whose last field is free text
+LOG_FIELD_COUNTS = {
+    "uadd": 6,     # time,user,uadd,room,queue,waitdata
+    "ouadd": 7,    # time,user,ouadd,room,queue,submitter,waitdata
+    "rsub": 5,     # time,user,rsub,room,subtitle
+    "rown": 5,     # time,user,rown,room,users
+    "rdelown": 5,  # time,user,rdelown,room,users
+}
+
 def getdblog(room):
     if not os.path.exists(private + "logs/" + room + ".log"):
         return []
     with open(private + "logs/" + room + ".log") as f:
         data = [x.split(",") for x in f.read().split("\n") if room in x]
+    # Rejoin free-text last fields that contained commas
+    for i in range(len(data)):
+        n = LOG_FIELD_COUNTS.get(data[i][2]) if len(data[i]) > 2 else None
+        if n and len(data[i]) > n:
+            data[i] = data[i][:n - 1] + [",".join(data[i][n - 1:])]
+    # Offline rows carry their real time, so sort by time
+    def row_time(row):
+        try:
+            return float(row[0])
+        except (ValueError, IndexError):
+            return 0.0
+    data.sort(key=row_time)
     # splice in section data
     sections = getsections(room)
     for i in range(len(data)):

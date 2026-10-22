@@ -37,6 +37,7 @@
                     <button class="btn" id="adminpanel" onclick="window.open('admin?room='+window.roomname, '_blank');">View control panel</button>
                     <button class="btn" id="adminpanel" onclick="toggleTimerView()">Toggle exam timer</button>
                     <button class="btn hide-if-not-owner" id="broadcastbtn" onclick="sendBroadcast()">Broadcast Message</button>
+                    <button class="btn" id="p2ptoggle" title="Peer-to-peer keeps the queue working between open tabs if the server goes down. Turn it off if it causes trouble in this browser." onclick="toggleP2P()">Peer-to-peer: On</button>
                     <button id="notify-toggle" class="btn btn-sm btn-outline-secondary" title="Enable/disable browser notifications when someone joins a queue" onclick="toggleNotifications()">
                         🔕
                     </button>
@@ -61,6 +62,10 @@
                     <p>Add queue</p>
                 </div>
             </div>
+        </div>
+        <div id="idlebanner">
+            <span>This room was paused after an hour of inactivity. Your place in any queue is kept.</span>
+            <button class="btn" onclick="reloadRoom()">Reconnect</button>
         </div>
         <div class="container" id="timer">
             <div id="innertimer">
@@ -110,10 +115,77 @@
         window.section = "--section--";
         window.is_owner = false;  // not a risk if changed manually (maliciously) client-side.
                                   // all authz requests are checked against room owners.
-        function fetchAndLimit(url) {
+        // "Simulate outage" test switch (hidden by CSS): fails this tab's requests to the site, mesh links keep working
+        window.simulatedOutage = false;
+        {
+            (function installOutageSimulator() {
+                const toThisSite = (input) => {
+                    try {
+                        const url = typeof input === "string" ? input : input.url;
+                        return new URL(url, location.href).hostname === location.hostname;
+                    } catch (e) { return false; }
+                };
+                const realFetch = window.fetch.bind(window);
+                window.fetch = function (input, init) {
+                    if (window.simulatedOutage && toThisSite(input)) {
+                        return Promise.reject(new TypeError("NetworkError (simulated outage)"));
+                    }
+                    return realFetch(input, init);
+                };
+                const RealEventSource = window.EventSource;
+                window.EventSource = function (url, config) {
+                    if (window.simulatedOutage && toThisSite(url)) {
+                        // behaves like a connection attempt that fails at once
+                        const dead = {url: url, readyState: 2, onopen: null, onmessage: null, onerror: null,
+                                      close() {}, addEventListener() {}, removeEventListener() {}};
+                        setTimeout(() => { if (dead.onerror) dead.onerror(new Event("error")); }, 50);
+                        return dead;
+                    }
+                    return new RealEventSource(url, config);
+                };
+                window.EventSource.prototype = RealEventSource.prototype;
+                const realBeacon = navigator.sendBeacon.bind(navigator);
+                navigator.sendBeacon = (url, data) => (window.simulatedOutage && toThisSite(url)) ? false : realBeacon(url, data);
+            })();
+        }
+
+        function toggleSimulatedOutage() {
+            window.simulatedOutage = !window.simulatedOutage;
+            document.documentElement.setAttribute("simoutage", window.simulatedOutage ? "on" : "off");
+            if (window.simulatedOutage) {
+                // an open SSE stream dies in a real outage too
+                if (window.evtSource) {
+                    try { window.evtSource.close(); } catch (e) {}
+                    window.evtSource = null;
+                }
+                // Go offline now, even in a tab that relies on the host for updates
+                confirmOutageNow();
+            }
+            else if (window.sseDownSince !== null) {
+                // check right away instead of waiting out the retry backoff
+                if (window.pingTimer) { clearTimeout(window.pingTimer); window.pingTimer = null; }
+                connectivityWatchdogTick();
+            }
+        }
+
+        // Site storage may be unavailable; preferences then fall back to defaults
+        function prefGet(key) {
+            try { return localStorage.getItem(key); } catch (e) { return null; }
+        }
+        function prefSet(key, value) {
+            try { localStorage.setItem(key, value); } catch (e) {}
+        }
+        function fetchAndLimit(url, options) {
             return new Promise(async (resolve, reject) => {
+                // Fail fast instead of hanging when the server is unreachable
+                var timeoutController = new AbortController();
+                var timeoutId = setTimeout(() => timeoutController.abort(), 8000);
+                var fetchOptions = Object.assign({}, options, {
+                    signal: (options && options.signal) || timeoutController.signal
+                });
                 try {
-                    var resp = await fetch(url);
+                    var resp = await fetch(url, fetchOptions);
+                    clearTimeout(timeoutId);
                     if (resp.status == 429) {
                         alert("You appear to be sending too many requests.  Please slow down.  Actions are blocked for the next 30 seconds.");
                         reject("Too many requests");
@@ -122,7 +194,12 @@
                         alert("This room is currently locked.  Ask the owner of the room (typically a TA or course staff) to unlock it.");
                         reject("Room locked");
                     }
-                    else if ((resp.status == 403) || (resp.status == 401)) {
+                    else if (resp.status == 401) {
+                        noteSignedOut();
+                        alert("You've been signed out of QueUp.  Reload the page to sign in again.");
+                        reject("Unauthorized");
+                    }
+                    else if (resp.status == 403) {
                         alert("You are not authorized to perform this action.  Unauthorized requests will be logged.");
                         reject("Unauthorized");
                     }
@@ -133,10 +210,50 @@
                     resolve(resp);
                 }
                 catch(err) {
+                    // Network failure: return a synthetic 503 so callers handle it like any other error
+                    clearTimeout(timeoutId);
                     console.log("err", err);
-                    reject(err);
+                    // Queue actions fall back to the mesh, so only alert for everything else
+                    if (!(options && options.meshFallback && meshConnected())) {
+                        alert("Could not reach the server. Please check your connection and try again.");
+                    }
+                    resolve(new Response("{}", {status: 503, statusText: "Network Error"}));
                 }
             })
+        }
+
+        // Background requests (presence, signaling, sync): no alerts, retry on 429 or network errors
+        async function silentFetch(url, options, retriesLeft=3) {
+            // Same fail-fast timeout as fetchAndLimit
+            var timeoutController = new AbortController();
+            var timeoutId = setTimeout(() => timeoutController.abort(), 8000);
+            var fetchOptions = Object.assign({}, options, {
+                signal: (options && options.signal) || timeoutController.signal
+            });
+            var resp;
+            try {
+                resp = await fetch(url, fetchOptions);
+                clearTimeout(timeoutId);
+            }
+            catch (err) {
+                // Retry network errors too, so a signal isn't lost mid-handshake
+                clearTimeout(timeoutId);
+                if (retriesLeft > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1100));
+                    return silentFetch(url, options, retriesLeft - 1);
+                }
+                throw err;
+            }
+            if (resp.status == 401) noteSignedOut();
+            if (resp.status == 429 && retriesLeft > 0) {
+                // wait out the limiter's window before trying again
+                await new Promise(resolve => setTimeout(resolve, 1100));
+                return silentFetch(url, options, retriesLeft - 1);
+            }
+            if (resp.status == 429) {
+                console.error("silentFetch: giving up after retries, still rate-limited:", url);
+            }
+            return resp;
         }
         async function closeRoom() {
             if (document.querySelectorAll(".is-self").length > 0) {
@@ -177,6 +294,10 @@
             }
             if (window.evtSource != null)
                 window.evtSource.close();
+            sendLeaveBeacon();
+            window.leftRoom = true;
+            window.relyingOnHost = false;
+            stopRelayWatchdog();
             // remove rooms
             Array.from(document.querySelectorAll(".roomtop:not(#queueadddiv)")).forEach(e => e.remove());
             document.getElementById("gear").classList.toggle("opened", false);
@@ -231,6 +352,10 @@
             try {
                 var response = await fetchAndLimit('roomd.wsgi?setup=true&action=add&room=' + roomname);
                 console.log(response);
+                if (response.status == 503) {
+                    // fetchAndLimit already alerted that the server is unreachable
+                    return;
+                }
                 if (response.status != 200) {
                     alert("An error occurred while creating the room. It's possible the server is just down - try again later.  If this was after multiple attempts, the room name may already be taken.");
                     return;
@@ -252,11 +377,15 @@
             }
             try {
                 var response = await fetchAndLimit('roomd.wsgi?setup=true&action=chk&room=' + roomname);
+                if (response.status == 503) {
+                    // fetchAndLimit already alerted that the server is unreachable
+                    return;
+                }
                 if (response.status != 200) {
                     alert("An error occurred while joining the room.  Please double check the room code.");
                     return;
                 }
-                localStorage.lastjoinedroom = document.getElementById("joinroom").value;
+                prefSet("lastjoinedroom", document.getElementById("joinroom").value);
                 setupRoom(response, roomname);
             }
             catch(err) {
@@ -264,6 +393,849 @@
                 console.error(err);
             }
         }
+        // Peer-to-peer mesh state (see P2P.md)
+        window.iceServers = null;
+        window.peerid = null;
+        window.meshConn = null;      // non-host: RTCPeerConnection to the host
+        window.meshChannel = null;   // non-host: RTCDataChannel to the host
+        window.hostConns = {};       // host only: peerid -> RTCPeerConnection
+        window.hostChannels = {};    // host only: peerid -> RTCDataChannel
+        window.knownPeers = [];      // [{peerid, user, owner, joined}] from SSE
+        window.currentHost = null;
+        window.amIHost = false;
+        window.sseDownSince = null;
+        // Set once a second consecutive SSE failure rules out routine reconnect cycling
+        window.confirmedOutage = false;
+
+        // One signaling queue for all peers; messages arriving mid-request ride the next one
+        window.pendingSignals = [];
+        window.signalFlushTimer = null;
+        window.signalFlushInFlight = false;
+
+        function sendSignal(to, type, payload) {
+            if (window.leftRoom) return;
+            window.pendingSignals.push({to: to, type: type, payload: payload});
+            if (window.signalFlushTimer || window.signalFlushInFlight) return;  // the next flush picks it up
+            flushSignals();
+        }
+
+        async function flushSignals() {
+            var messages = window.pendingSignals;
+            window.pendingSignals = [];
+            if (messages.length === 0) return;
+            window.signalFlushInFlight = true;
+            var retryIn = 150;
+            try {
+                var r = await silentFetch(`roomd.wsgi?setup=true&action=signalsend&room=${window.roomname}&peerid=${window.peerid}`, {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({messages: messages})
+                });
+                if (r.status === 429) {
+                    // still rate-limited after retries: keep the signals, try again shortly
+                    window.pendingSignals = messages.concat(window.pendingSignals);
+                    retryIn = 2000;
+                }
+            }
+            catch (err) {
+                console.error("signalsend failed:", err);
+                // The server isn't taking writes, so stop setting up connections that can't be signaled
+                confirmOutageNow();
+            }
+            window.signalFlushInFlight = false;
+            if (window.pendingSignals.length > 0 && !window.signalFlushTimer) {
+                window.signalFlushTimer = setTimeout(() => {
+                    window.signalFlushTimer = null;
+                    flushSignals();
+                }, retryIn);
+            }
+        }
+
+        // Bump when the mesh protocol changes; only tabs on the newest version present can host
+        var MESH_VERSION = 5;
+
+        function electHost(connectedPeers) {
+            var newest = Math.max(MESH_VERSION, ...connectedPeers.map(p => p.v || 0));
+            connectedPeers = connectedPeers.filter(p => (p.v || 0) === newest || p.peerid === window.peerid && MESH_VERSION === newest);
+            if (connectedPeers.length === 0) return null;
+            var owners = connectedPeers.filter(p => p.owner);
+            var pool = owners.length ? owners : connectedPeers;
+            return pool.slice().sort((a, b) => a.joined - b.joined || a.user.localeCompare(b.user))[0];
+        }
+
+        // Offline actions are signed, journaled on every peer, and synced to the server later (see P2P.md)
+        window.signKey = null;
+        window.clockOffset = 0;          // server ms - local ms
+        window.offlineSeq = 0;
+        window.journal = {};             // id -> {env, origin, acked}
+        window.journalTabId = crypto.randomUUID();
+        window.serverJSON = null;
+        window.syncInFlight = false;
+        window.syncTimer = null;
+        var JOURNAL_PREFIX = "queup-offline:";
+        var JOURNAL_RETENTION_MS = 3 * 3600 * 1000;   // matches server RETENTION_SECONDS
+        // outcomes where the server's state already reflects what the user wanted
+        var SYNC_OK = ["applied", "duplicate", "superseded", "rejected:already-in-queue", "rejected:not-in-queue"];
+        var SYNC_REASONS = {
+            "rejected:cooldown": "the room's cooldown period hadn't passed yet",
+            "rejected:locked": "the room was locked",
+            "rejected:singlequeue": "this room only allows being in one queue at a time",
+            "bad-time": "it was too old (or its time couldn't be trusted)",
+            "bad-signature": "it couldn't be verified as yours",
+            "invalid": "that queue no longer exists, or the action was malformed",
+            "rejected:not-owner": "you aren't an owner of this room (anymore)"
+        };
+        var OWNER_OFFLINE_ACTIONS = ["usdel", "qmrk", "qclr"];
+        function describeEnvelope(e) {
+            switch (e.action) {
+                case "uadd": return `Joining "${e.queue}"`;
+                case "udel": return `Leaving "${e.queue}"`;
+                case "usdel": return `Removing ${e.target} from "${e.queue}"`;
+                case "qmrk": return `${e.value == "1" ? "Marking" : "Unmarking"} ${e.target} in "${e.queue}"`;
+                case "qclr": return `Clearing "${e.queue}"`;
+            }
+            return e.action;
+        }
+
+        function serverNow() { return Date.now() + window.clockOffset; }
+        // Keep the largest recent clock-offset sample; late or relayed samples only underestimate it
+        window.clockSampleAt = null;
+        function noteServerTime(t) {
+            if (typeof t !== "number") return;
+            var sample = t * 1000 - Date.now();
+            var stale = window.clockSampleAt === null || Date.now() - window.clockSampleAt > 15 * 60 * 1000;
+            if (stale || sample > window.clockOffset) {
+                window.clockOffset = sample;
+                window.clockSampleAt = Date.now();
+            }
+        }
+
+        async function importSignKey(b64) {
+            try {
+                var raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+                window.signKey = await crypto.subtle.importKey("raw", raw, {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+            }
+            catch (e) {
+                window.signKey = null;
+                console.error("could not import offline signing key:", e);
+            }
+        }
+
+        // must match lib/offlinesync.py canonical()
+        function canonicalEnvelope(e) {
+            return [e.id, e.peerid, e.room, e.user, e.action, e.queue, e.target, e.waitdata, e.value, String(e.t), String(e.seq)].join("|");
+        }
+
+        function journalKey() { return JOURNAL_PREFIX + window.roomname + ":" + window.journalTabId; }
+
+        // Each tab journals under its own key; on load, adopt journals left by closed tabs of this room
+        function loadJournal() {
+            window.journal = {};
+            var cutoff = serverNow() - JOURNAL_RETENTION_MS;
+            try {
+                var roomPrefix = JOURNAL_PREFIX + window.roomname + ":";
+                for (var i = localStorage.length - 1; i >= 0; i--) {
+                    var k = localStorage.key(i);
+                    if (!k || !k.startsWith(JOURNAL_PREFIX)) continue;
+                    var j = JSON.parse(localStorage.getItem(k) || "{}") || {};
+                    if (k.startsWith(roomPrefix)) {
+                        Object.keys(j).forEach(id => {
+                            if (j[id] && j[id].env && j[id].env.t >= cutoff && !j[id].acked) window.journal[id] = j[id];
+                        });
+                        localStorage.removeItem(k);
+                    }
+                    else {
+                        // other rooms sync when reopened; just drop what has expired
+                        Object.keys(j).forEach(id => { if (!j[id] || !j[id].env || j[id].env.t < cutoff) delete j[id]; });
+                        if (Object.keys(j).length) localStorage.setItem(k, JSON.stringify(j));
+                        else localStorage.removeItem(k);
+                    }
+                }
+            }
+            catch (e) {}
+            saveJournal();
+        }
+
+        function saveJournal() {
+            try {
+                var pending = {};
+                Object.keys(window.journal).forEach(id => { if (!window.journal[id].acked) pending[id] = window.journal[id]; });
+                if (Object.keys(pending).length) localStorage.setItem(journalKey(), JSON.stringify(pending));
+                else localStorage.removeItem(journalKey());
+            }
+            catch (e) {}
+        }
+
+        function journalEnvelopes(includeAcked) {
+            return Object.values(window.journal)
+                .filter(x => includeAcked || !x.acked)
+                .map(x => x.env)
+                .sort((a, b) => a.t - b.t || a.seq - b.seq);
+        }
+
+        // Mesh data comes from other browsers, so check it against the server's own formats before it is rendered
+        var RX = {
+            user: /^[a-z0-9]{2,8}$/, queue: /^[a-zA-Z0-9_]{3,15}$/, waitdata: /^[a-zA-Z0-9 ,_'()]{1,50}$/,
+            room: /^[A-Z0-9]{5}$/, peerid: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
+            section: /^[A-Za-z0-9 _.-]{0,20}$/
+        };
+        var ENVELOPE_ACTIONS = ["uadd", "udel", "usdel", "qmrk", "qclr"];
+        function validEnvelope(e) {
+            if (!e || typeof e !== "object") return false;
+            var str = (v) => typeof v === "string";
+            if (!(str(e.id) && RX.peerid.test(e.id) && str(e.peerid) && RX.peerid.test(e.peerid) && e.room === window.roomname &&
+                  str(e.user) && RX.user.test(e.user) && ENVELOPE_ACTIONS.includes(e.action) && str(e.queue) && RX.queue.test(e.queue) &&
+                  Number.isInteger(e.t) && Number.isInteger(e.seq))) return false;
+            var needsTarget = e.action === "usdel" || e.action === "qmrk";
+            if (needsTarget ? !(str(e.target) && RX.user.test(e.target)) : e.target !== "") return false;
+            if (e.action === "uadd" ? !(e.waitdata === "" || (str(e.waitdata) && RX.waitdata.test(e.waitdata))) : e.waitdata !== "") return false;
+            return e.action === "qmrk" ? (e.value === "0" || e.value === "1") : e.value === "";
+        }
+
+        function escapeHTML(v) {
+            return String(v).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+        }
+
+        // Rebuild a room update relayed by the host from validated fields only; null if it isn't one
+        function sanitizeRelayedPayload(data) {
+            if (!data || typeof data !== "object" || typeof data[window.roomname] !== "object" || data[window.roomname] === null) return null;
+            var out = {}, queues = {};
+            Object.keys(data[window.roomname]).forEach(q => {
+                if (!RX.queue.test(q) || !Array.isArray(data[window.roomname][q])) return;
+                queues[q] = data[window.roomname][q].filter(x => Array.isArray(x) && typeof x[0] === "string" && RX.user.test(x[0]) &&
+                        typeof x[1] === "number" && (x[2] === "" || (typeof x[2] === "string" && RX.waitdata.test(x[2]))))
+                    .map(x => [x[0], x[1], x[2], (x[3] == 1) ? 1 : 0, (typeof x[4] === "string" && RX.section.test(x[4])) ? x[4] : ""]);
+            });
+            out[window.roomname] = queues;
+            if (data.names && typeof data.names === "object") {
+                out.names = {};
+                Object.keys(data.names).forEach(u => { if (RX.user.test(u)) out.names[u] = escapeHTML(data.names[u]); });
+            }
+            var meta = data.meta || {}, timer = meta.timer || {}, bcast = meta.broadcast || {};
+            out.meta = {
+                timer: {sync: !!timer.sync, running: !!timer.running, start_time: Number(timer.start_time) || 0, duration: Number(timer.duration) || 0},
+                broadcast: {message: String(bcast.message || ""), id: String(bcast.id || "")}
+            };
+            if (Array.isArray(data.peers)) {
+                out.peers = data.peers.filter(p => p && typeof p.peerid === "string" && RX.peerid.test(p.peerid) && typeof p.user === "string" && RX.user.test(p.user))
+                    .map(p => ({peerid: p.peerid, user: p.user, owner: !!p.owner, joined: Number(p.joined) || 0, v: Number(p.v) || 0}));
+            }
+            out.watermarks = {};
+            Object.keys(data.watermarks || {}).forEach(k => { if (typeof data.watermarks[k] === "number") out.watermarks[k] = data.watermarks[k]; });
+            if (typeof data.servertime === "number") out.servertime = data.servertime;
+            return out;
+        }
+
+        function applyEnvelopeToJSON(json, e) {
+            var queues = json && json[window.roomname];
+            if (!queues || !queues[e.queue]) return;
+            if (e.action === "uadd") {
+                if (!queues[e.queue].some(x => x[0] === e.user)) {
+                    queues[e.queue].push([e.user, e.t / 1000, e.waitdata, "0", ""]);
+                }
+            }
+            else if (e.action === "udel") {
+                queues[e.queue] = queues[e.queue].filter(x => x[0] !== e.user);
+            }
+            else if (e.action === "usdel") {
+                queues[e.queue] = queues[e.queue].filter(x => x[0] !== e.target);
+            }
+            else if (e.action === "qmrk") {
+                queues[e.queue].forEach(x => { if (x[0] === e.target) x[3] = e.value; });
+            }
+            else if (e.action === "qclr") {
+                // like the server: only entries that existed when it was cleared
+                queues[e.queue] = queues[e.queue].filter(x => x[1] > e.t / 1000);
+            }
+        }
+
+        // Skip pending actions the server has already superseded (same rule as offline sync)
+        function envelopeSuperseded(json, e) {
+            var wm = json.watermarks || {};
+            var t = e.t / 1000, q = e.queue;
+            if (e.action === "qclr") return t < (wm["*|" + q] || 0);
+            var subject = (e.action === "usdel" || e.action === "qmrk") ? e.target : e.user;
+            var latest = Math.max(wm[subject + "|" + q] || 0, wm["*|" + q] || 0);
+            if (e.action === "qmrk") latest = Math.max(latest, wm["m:" + subject + "|" + q] || 0);
+            return t < latest;
+        }
+
+        function renderRoom() {
+            if (!window.serverJSON) return;
+            var json = JSON.parse(JSON.stringify(window.serverJSON));
+            journalEnvelopes(true).forEach(e => { if (!envelopeSuperseded(json, e)) applyEnvelopeToJSON(json, e); });
+            window.lastJSON = json;
+            genRoom(window.roomname, json);
+        }
+
+        // ids whose HTTP request got a real answer: their mesh copy is moot
+        window.retractedIds = new Set();
+        function retractEnvelope(id) {
+            window.retractedIds.add(id);
+            if (window.journal[id] && !window.journal[id].acked) {
+                delete window.journal[id];
+                saveJournal();
+                renderRoom();
+            }
+        }
+
+        // A relayed action must come from a tab the server listed for that user; staff actions only from an owner's tab
+        function knownSender(e) {
+            var meta = window.knownPeers.find(p => p.peerid === e.peerid);
+            return !!meta && meta.user === e.user && (!OWNER_OFFLINE_ACTIONS.includes(e.action) || !!meta.owner);
+        }
+
+        function recordEnvelope(e, origin) {
+            if (!validEnvelope(e) || window.journal[e.id]) return;
+            if (origin === "relayed" && !knownSender(e)) return;
+            if (origin === "self" && window.retractedIds.has(e.id)) return;
+            window.journal[e.id] = {env: e, origin: origin, acked: false};
+            saveJournal();
+            renderRoom();
+            // Our server connection works, so submit relayed actions now
+            if (window.sseDownSince === null) scheduleOfflineSync();
+        }
+
+        // Called by the peer that actually performed the action.
+        async function relayAndApplyAction(actionMsg) {
+            var e = {
+                type: "offlineaction",
+                id: actionMsg.id || crypto.randomUUID(),
+                peerid: window.peerid,
+                room: window.roomname,
+                user: window.username,
+                action: actionMsg.action,
+                queue: actionMsg.queue,
+                target: actionMsg.target || "",
+                waitdata: actionMsg.action === "uadd" ? (actionMsg.waitdata || "") : "",
+                value: actionMsg.value || "",
+                t: actionMsg.t || Math.round(serverNow()),
+                seq: ++window.offlineSeq
+            };
+            if (window.signKey) {
+                var sig = await crypto.subtle.sign("HMAC", window.signKey, new TextEncoder().encode(canonicalEnvelope(e)));
+                e.sig = btoa(String.fromCharCode(...new Uint8Array(sig)));
+            }
+            // the server may have answered while we were signing
+            if (window.retractedIds.has(e.id)) return;
+            recordEnvelope(e, "self");
+            sendMeshAction(e);
+        }
+
+        // The host only relays actions from the tab that signed them, and staff actions only from owners
+        function acceptFromPeer(msg, fromPeerid) {
+            if (!msg || typeof msg !== "object") return false;
+            if (msg.type === "offlineaction") {
+                var meta = window.knownPeers.find(p => p.peerid === fromPeerid);
+                return msg.peerid === fromPeerid && !!meta && meta.user === msg.user &&
+                    (!OWNER_OFFLINE_ACTIONS.includes(msg.action) || !!meta.owner);
+            }
+            // syncack/payload/serverdown only ever flow host -> peers
+            return msg.type === "serverback";
+        }
+
+        function handleMeshMessage(msg) {
+            if (!msg) return;
+            if (msg.type === "offlineaction" && msg.room === window.roomname) {
+                recordEnvelope(msg, "relayed");
+            }
+            else if (msg.type === "syncack" && msg.results && typeof msg.results === "object") {
+                // a host's report only clears relayed entries; our own are confirmed by the server directly
+                var relayedOnly = {};
+                Object.keys(msg.results).forEach(id => {
+                    var entry = window.journal[id];
+                    if (entry && entry.origin !== "self" && typeof msg.results[id] === "string") relayedOnly[id] = msg.results[id];
+                });
+                processSyncResults(relayedOnly, typeof msg.servertime === "number" ? msg.servertime : undefined);
+            }
+            else if (msg.type === "serverback") {
+                onPeerReportsServerBack();
+            }
+            else if (msg.type === "payload") {
+                handleRelayedPayload(msg);
+            }
+            else if (msg.type === "hostlost") {
+                // the tab we're linked to can't reach the server for us anymore
+                window.upstreamCannotServe = true;
+                resumeOwnSSE("host signed out");
+                sendHeartbeat();
+            }
+            else if (msg.type === "meshinfo") {
+                if (typeof msg.peers === "number") window.meshPeerCount = msg.peers;
+                updateOfflineBadge();
+            }
+            else if (msg.type === "serverdown") {
+                if (window.relyingOnHost) {
+                    // host's confirmation stands in for our own two-strike check
+                    window.sseDownSince = window.sseDownSince || (Date.now() - 3001);
+                    window.confirmedOutage = true;
+                    updateOfflineBadge();
+                }
+            }
+        }
+
+        // Drop acked entries once a payload newer than the sync arrives (or after 5 minutes)
+        function dropAckedEntries(payloadServerTime) {
+            var dropped = false;
+            Object.keys(window.journal).forEach(id => {
+                var entry = window.journal[id];
+                if (!entry.acked) return;
+                var caughtUp = typeof payloadServerTime === "number" && payloadServerTime >= (entry.ackAt || 0);
+                // already handled earlier (e.g. synced by the host): no new update may ever come for it
+                var waitMs = entry.ackStatus === "applied" ? 5 * 60 * 1000 : 10000;
+                var abandoned = Date.now() - (entry.ackedLocally || 0) > waitMs;
+                if (caughtUp || abandoned) { delete window.journal[id]; dropped = true; }
+            });
+            return dropped;
+        }
+
+        function processSyncResults(results, serverTime) {
+            var rejectedMine = [];
+            Object.keys(results).forEach(id => {
+                var entry = window.journal[id];
+                if (!entry) return;
+                if (SYNC_OK.includes(results[id])) {
+                    entry.acked = true;
+                    entry.ackAt = typeof serverTime === "number" ? serverTime : Infinity;
+                    entry.ackedLocally = Date.now();
+                    entry.ackStatus = results[id];
+                }
+                else {
+                    if (entry.env.user === window.username) rejectedMine.push([entry.env, results[id]]);
+                    delete window.journal[id];
+                }
+            });
+            // The update from this sync may already have arrived
+            dropAckedEntries(window.lastPayloadServerTime);
+            setTimeout(() => { if (dropAckedEntries(window.lastPayloadServerTime)) { saveJournal(); renderRoom(); } }, 10500);
+            saveJournal();
+            renderRoom();
+            updateOfflineBadge();
+            if (rejectedMine.length) {
+                var lines = rejectedMine.map(([e, status]) =>
+                    `- ${describeEnvelope(e)} at ${new Date(e.t - window.clockOffset).toLocaleTimeString()}: ${SYNC_REASONS[status] || status}`);
+                alert("Some of what you did while the server was unreachable could not be applied:\n\n" + lines.join("\n"));
+            }
+        }
+
+        var SYNC_TIMEOUT_MS = 5000;
+        async function syncOfflineJournal() {
+            window.syncTimer = null;
+            // signed out: peers sync our signed envelopes for us
+            if (window.syncInFlight || window.sseDownSince !== null || window.signedOut) { updateOfflineBadge(); return; }
+            var pending = journalEnvelopes(false);
+            if (!pending.length) { updateOfflineBadge(); return; }
+            window.syncInFlight = true;
+            updateOfflineBadge();
+            try {
+                for (var i = 0; i < pending.length; i += 200) {
+                    // No retries: a sync that doesn't answer in time means the server isn't really back
+                    var controller = new AbortController();
+                    var timeoutId = setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
+                    var r = await fetch(`roomd.wsgi?setup=true&action=offlinesync&room=${window.roomname}`, {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify({envelopes: pending.slice(i, i + 200)}),
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    if (!r.ok) {
+                        if (r.status == 401) noteSignedOut();
+                        // left pending; retried on the next room update
+                        console.error("offlinesync failed:", r.status, await r.text());
+                        break;
+                    }
+                    var j = await r.json();
+                    processSyncResults(j.results || {}, j.servertime);
+                    sendMeshAction({type: "syncack", results: j.results || {}, servertime: j.servertime});
+                }
+            }
+            catch (err) {
+                console.error("offlinesync failed, treating server as unreachable:", err);
+                window.syncInFlight = false;
+                confirmOutageNow();
+            }
+            window.syncInFlight = false;
+            updateOfflineBadge();
+        }
+
+        // The host syncs at once; others wait, since the host's syncack usually leaves them nothing to send
+        function scheduleOfflineSync() {
+            if (window.syncTimer || window.syncInFlight || journalEnvelopes(false).length === 0) return;
+            var delay = window.amIHost ? 0 : 4000 + Math.random() * 3000;
+            window.syncTimer = setTimeout(syncOfflineJournal, delay);
+            updateOfflineBadge();
+        }
+
+        // A peer reached the server: check ours now instead of waiting out the backoff
+        function onPeerReportsServerBack() {
+            // a tab relying on the host learns this from the host's next payload
+            if (window.relyingOnHost) return;
+            if (window.sseDownSince === null || window.disableErrors || window.evtSource) return;
+            if (window.pingTimer) {
+                clearTimeout(window.pingTimer);
+                window.pingTimer = null;
+            }
+            connectivityWatchdogTick();
+        }
+
+        function sendMeshAction(actionMsg) {
+            forwardToLinks(JSON.stringify(actionMsg), null);
+        }
+
+        // Forward to every link except the sender; the mesh is a tree, so everyone gets it once
+        function forwardToLinks(data, exceptDc) {
+            openLinks().forEach(link => {
+                if (link.dc === exceptDc) return;
+                try { link.dc.send(data); } catch (e) {}
+            });
+        }
+
+        // Connections are replaced make-before-break: a working link stays until its replacement opens
+        var CONNECT_TIMEOUT_MS = 15000;
+        window.meshHostId = null;      // non-host: peerid meshConn is connected to
+        window.pendingConn = null;     // non-host: {pc, dc, hostId} being set up
+        window.hostPending = {};       // host: peerid -> pc being set up
+
+        function closeMeshConnectionTo(peerid) {
+            if (window.hostConns[peerid]) {
+                try { window.hostConns[peerid].close(); } catch(e) {}
+                delete window.hostConns[peerid];
+            }
+            delete window.hostChannels[peerid];
+        }
+
+        function dropActiveHostLink() {
+            if (window.meshConn) {
+                try { window.meshConn.close(); } catch(e) {}
+            }
+            window.meshConn = null;
+            window.meshChannel = null;
+            window.meshHostId = null;
+            window.upstreamTrusted = false;
+        }
+
+        function connectToHost(host) {
+            if (window.leftRoom) return;
+            if (!host || host.peerid === window.peerid) return;
+            if (window.pendingConn) {
+                if (window.pendingConn.hostId === host.peerid) return;   // already on it
+                try { window.pendingConn.pc.close(); } catch(e) {}
+                window.pendingConn = null;
+            }
+            // signaling to/from the host arrives over our own SSE
+            resumeOwnSSE("connecting to host");
+            var pc = new RTCPeerConnection({iceServers: window.iceServers});
+            var dc = pc.createDataChannel("queup-mesh");
+            var attempt = {pc: pc, dc: dc, hostId: host.peerid};
+            window.pendingConn = attempt;
+            dc.onopen = () => {
+                if (window.pendingConn !== attempt) { try { pc.close(); } catch(e) {} return; }
+                // the replacement is up: only now let go of the old link
+                if (window.meshConn && window.meshConn !== pc) {
+                    try { window.meshConn.close(); } catch(e) {}
+                }
+                window.pendingConn = null;
+                window.meshConn = pc;
+                window.meshChannel = dc;
+                window.meshHostId = host.peerid;
+                window.upstreamCannotServe = false;   // a new upstream link
+                // only an owner's tab is trusted to relay room state (judged from our own server data)
+                var upstream = window.knownPeers.find(p => p.peerid === host.peerid);
+                window.upstreamTrusted = !!(upstream && upstream.owner);
+                updateOfflineBadge();
+            };
+            dc.onclose = () => {
+                if (window.pendingConn === attempt) window.pendingConn = null;
+                if (window.meshChannel !== dc) return;
+                window.meshConn = null;
+                window.meshChannel = null;
+                window.meshHostId = null;
+                window.upstreamTrusted = false;
+                resumeOwnSSE("lost connection to host");
+                updateOfflineBadge();
+                reElectHost();
+            };
+            dc.onmessage = (e) => {
+                // a replaced connection's late messages aren't from our host anymore
+                if (window.meshChannel !== dc) return;
+                var msg;
+                try { msg = JSON.parse(e.data); } catch (err) { return; }
+                handleMeshMessage(msg);
+                // still serving peers of our own while switching hosts: pass it on
+                if (Object.keys(window.hostChannels).length) forwardToLinks(e.data, dc);
+            };
+            pc.onicecandidate = (e) => {
+                if (e.candidate) sendSignal(host.peerid, "ice", e.candidate.toJSON());
+            };
+            pc.onconnectionstatechange = () => {
+                // Only give up on failed connections; 'disconnected' often recovers
+                if (!["failed", "closed"].includes(pc.connectionState)) return;
+                if (window.pendingConn === attempt) window.pendingConn = null;
+                if (window.meshConn === pc) {
+                    window.meshConn = null;
+                    window.meshChannel = null;
+                    window.meshHostId = null;
+                    window.upstreamTrusted = false;
+                    updateOfflineBadge();
+                    reElectHost();
+                }
+            };
+            pc.createOffer().then(offer => {
+                pc.setLocalDescription(offer);
+                sendSignal(host.peerid, "offer", {sdp: offer.sdp, type: offer.type});
+            });
+            setTimeout(() => {
+                if (window.pendingConn !== attempt) return;
+                // didn't come up: drop just this attempt; any working link stays
+                console.warn("Connection to host " + host.peerid.slice(0, 8) + " didn't come up; will retry");
+                window.pendingConn = null;
+                try { pc.close(); } catch(e) {}
+                setTimeout(reElectHost, 5000 + Math.random() * 5000);
+            }, CONNECT_TIMEOUT_MS);
+        }
+
+        function acceptIncomingPeer(fromPeerid, offerPayload) {
+            if (window.leftRoom) return;
+            // a peer re-offering keeps its current channel until the new one opens
+            if (window.hostPending[fromPeerid]) {
+                try { window.hostPending[fromPeerid].close(); } catch(e) {}
+            }
+            var pc = new RTCPeerConnection({iceServers: window.iceServers});
+            window.hostPending[fromPeerid] = pc;
+            pc.ondatachannel = (e) => {
+                var dc = e.channel;
+                dc.onopen = () => {
+                    if (window.hostPending[fromPeerid] !== pc) { try { pc.close(); } catch(e) {} return; }
+                    delete window.hostPending[fromPeerid];
+                    if (window.hostConns[fromPeerid] && window.hostConns[fromPeerid] !== pc) {
+                        try { window.hostConns[fromPeerid].close(); } catch(e) {}
+                    }
+                    window.hostConns[fromPeerid] = pc;
+                    window.hostChannels[fromPeerid] = dc;
+                    // peers now connect to us: a link we still had to a previous host is moot
+                    if (window.amIHost && window.meshConn) dropActiveHostLink();
+                    updateOfflineBadge();
+                    broadcastMeshInfo();
+                    // the current room state lets the new peer hand off its SSE right away
+                    if (window.serverJSON && window.sseDownSince === null) sendPayloadTo(dc, window.serverJSON);
+                };
+                dc.onclose = () => {
+                    if (window.hostChannels[fromPeerid] !== dc) return;
+                    delete window.hostConns[fromPeerid];
+                    delete window.hostChannels[fromPeerid];
+                    updateOfflineBadge();
+                    broadcastMeshInfo();
+                };
+                dc.onmessage = (ev) => {
+                    if (window.hostChannels[fromPeerid] !== dc) return;
+                    var msg;
+                    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                    if (!acceptFromPeer(msg, fromPeerid)) {
+                        // a peer that synced before us reports its results; expected, not suspicious
+                        if (!(msg && ["syncack", "meshinfo"].includes(msg.type))) console.warn("dropped mesh message from", fromPeerid, msg && msg.type);
+                        return;
+                    }
+                    handleMeshMessage(msg);
+                    // Fan out to every other link
+                    forwardToLinks(ev.data, dc);
+                };
+            };
+            pc.onicecandidate = (e) => {
+                if (e.candidate) sendSignal(fromPeerid, "ice", e.candidate.toJSON());
+            };
+            pc.onconnectionstatechange = () => {
+                if (!["failed", "closed"].includes(pc.connectionState)) return;
+                if (window.hostPending[fromPeerid] === pc) delete window.hostPending[fromPeerid];
+                if (window.hostConns[fromPeerid] === pc) {
+                    delete window.hostConns[fromPeerid];
+                    delete window.hostChannels[fromPeerid];
+                    updateOfflineBadge();
+                }
+            };
+            setTimeout(() => {
+                if (window.hostPending[fromPeerid] !== pc) return;
+                delete window.hostPending[fromPeerid];
+                try { pc.close(); } catch(e) {}
+            }, CONNECT_TIMEOUT_MS + 5000);
+            pc.setRemoteDescription({type: offerPayload.type, sdp: offerPayload.sdp})
+                .then(() => pc.createAnswer())
+                .then(answer => {
+                    pc.setLocalDescription(answer);
+                    sendSignal(fromPeerid, "answer", {sdp: answer.sdp, type: answer.type});
+                })
+                .catch(err => console.error("Failed to accept incoming peer:", err));
+        }
+
+        function handleSignal(sig) {
+            var from = sig.from, type = sig.type, payload = sig.payload;
+            if (window.amIHost && type === "offer") {
+                acceptIncomingPeer(from, payload);
+            }
+            else if (type === "ice" && (window.hostPending[from] || window.hostConns[from])) {
+                // ICE after a (re)offer belongs to the connection being set up
+                (window.hostPending[from] || window.hostConns[from]).addIceCandidate(payload).catch(() => {});
+            }
+            else if (window.pendingConn && window.pendingConn.hostId === from) {
+                var pc = window.pendingConn.pc;
+                if (type === "answer") pc.setRemoteDescription({type: payload.type, sdp: payload.sdp}).catch(() => {});
+                else if (type === "ice") pc.addIceCandidate(payload).catch(() => {});
+            }
+        }
+
+        function reElectHost() {
+            // Wait for ICE servers; initMesh() calls this again once they arrive
+            if (!window.iceServers) return;
+            // No new connections can be signaled during an outage, so keep the current topology
+            if (window.sseDownSince !== null && meshConnected()) { updateOfflineBadge(); return; }
+            var newHost = electHost(window.knownPeers);
+            // Don't tear down a working link over an empty peers snapshot
+            if (!newHost && meshConnected()) return;
+            window.currentHost = newHost;
+            window.amIHost = !!(newHost && newHost.peerid === window.peerid);
+            if (window.amIHost) {
+                resumeOwnSSE("became host");
+                // a link to a previous host stays until a peer connects to us
+            }
+            else if (newHost) {
+                var linked = window.meshChannel && window.meshChannel.readyState === "open" &&
+                    window.meshHostId === newHost.peerid;
+                if (!linked) connectToHost(newHost);   // no-op if already attempting it
+            }
+            updateOfflineBadge();
+        }
+
+        // Per-browser setting; when off the tab never joins the mesh and talks only to the server
+        function p2pEnabled() {
+            return prefGet("queup_p2p") !== "off";
+        }
+
+        function updateP2PButton() {
+            var btn = document.getElementById("p2ptoggle");
+            if (btn) btn.innerHTML = "Peer-to-peer: " + (p2pEnabled() ? "On" : "Off");
+        }
+
+        function toggleP2P() {
+            var want = p2pEnabled() ? "off" : "on";
+            prefSet("queup_p2p", want);
+            if (prefGet("queup_p2p") !== want) {
+                alert("This browser isn't letting QueUp save settings, so peer-to-peer can't be turned off here.");
+                return;
+            }
+            updateP2PButton();
+            // reload the room so connections are set up (or torn down) cleanly
+            if (window.roomname && !window.leftRoom) reloadRoom();
+        }
+
+        async function initMesh() {
+            if (!window.RTCPeerConnection || !p2pEnabled()) return;  // opportunistic only, and optional
+            window.peerid = crypto.randomUUID();
+            try {
+                // peerjoin also returns ICE servers, this tab's signing key and the server time
+                var r = await silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=${MESH_VERSION}`);
+                var j = await r.json();
+                window.iceServers = j.iceServers;
+                noteServerTime(j.servertime);
+                if (j.signkey) await importSignKey(j.signkey);
+            }
+            catch (err) {
+                console.error("peerjoin failed, mesh unavailable this session:", err);
+                return;
+            }
+            reElectHost();  // catch up on any peers-update SSE already delivered
+            window.heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_MS);
+            // TURN credentials last 4h; peerjoin hands out fresh ones
+            window.presenceTimer = setInterval(refreshPresence, 60 * 60 * 1000);
+        }
+
+        // All open channels: down to our peers and up to our host (both, briefly, during a host change)
+        function openLinks() {
+            var links = Object.keys(window.hostChannels)
+                .filter(pid => window.hostChannels[pid].readyState === "open")
+                .map(pid => ({dc: window.hostChannels[pid], peerid: pid, upstream: false}));
+            if (window.meshChannel && window.meshChannel.readyState === "open") {
+                links.push({dc: window.meshChannel, peerid: window.meshHostId, upstream: true});
+            }
+            return links;
+        }
+
+        function meshConnected() {
+            return openLinks().length > 0;
+        }
+
+        // Relay actions over the mesh once an outage is confirmed
+        function shouldUseMeshRelay() {
+            // Signed out: peers can sync our signed actions for us
+            return (window.confirmedOutage || window.signedOut) && meshConnected();
+        }
+
+        // Number of other tabs in the mesh; the host announces the total so every tab agrees
+        window.meshPeerCount = 0;
+        function meshUserCount() {
+            var downstream = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open").length;
+            if (downstream) return openLinks().length;
+            if (window.meshChannel && window.meshChannel.readyState === "open") return Math.max(1, window.meshPeerCount);
+            return 0;
+        }
+
+        function broadcastMeshInfo() {
+            var downstream = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open").length;
+            if (downstream) sendMeshAction({type: "meshinfo", peers: downstream});
+        }
+
+        function updateOfflineBadge() {
+            var badge = document.getElementById("offlinebadge");
+            if (!badge) return;
+            var n = meshUserCount();
+            var users = n + (n === 1 ? " user" : " users");
+            var mode, text;
+            if (window.signedOut) {
+                mode = "signedout"; text = "⚠️ Signed out — reload to sign in again";
+            }
+            else if (window.sseDownSince === null) {
+                if (window.syncInFlight || window.syncTimer) {
+                    mode = "syncing"; text = "⏳ Syncing offline changes…";
+                }
+                else if (n > 0) {
+                    mode = "live"; text = "🟢 Syncing with " + users;
+                }
+                else {
+                    mode = "none"; text = "";
+                }
+            }
+            else {
+                if (Date.now() - window.sseDownSince < 3000) return;  // debounce against normal SSE blips
+                if (n > 0) {
+                    mode = "mesh"; text = "🟠 Syncing with " + users + ", offline.";
+                }
+                else {
+                    mode = "nomesh"; text = "🔴 Server disconnected";
+                }
+            }
+            document.documentElement.setAttribute("offlinemode", mode);
+            badge.innerHTML = text;
+        }
+
+        function explainOfflineBadge() {
+            var mode = document.documentElement.getAttribute("offlinemode");
+            if (mode == "live") {
+                alert("You're connected directly to " + meshUserCount() + " other " + (meshUserCount() === 1 ? "user" : "users") + " in this room. If the server that hosts QueUp goes down, the queue keeps working between you over WebRTC.");
+            }
+            else if (mode == "mesh") {
+                alert("The server that hosts QueUp is down, so we've switched to WebRTC to maintain the queue.  As long as two or more users remain connected, the queue will not lose data when the server comes back up.");
+            }
+            else if (mode == "syncing") {
+                alert("The changes made to the queue while the server was down are being synchronized back to the server.  Once this is complete, the queue's operation will continue as normal.");
+            }
+            else if (mode == "signedout") {
+                alert("Your browser is no longer signed in to QueUp, so this page can't reach the server.  Reload the page and sign in again." +
+                      (meshConnected() ? "  Until then, your queue actions are passed to other connected users, who send them to the server for you." : ""));
+            }
+            else if (mode == "nomesh") {
+                alert("You are currently disconnected from the queue, most likely because no one else is using the queue, the server is down, and/or your Internet connection is down somehow.  Either wait on the server to come back up, and/or check your Internet connection.");
+            }
+        }
+
         async function setupRoom(response, roomname) {
             document.getElementById("collapse").classList.toggle("collapsible-in-overlay", false);
             document.getElementById("navside2").classList.toggle("small-screen", true);
@@ -313,82 +1285,364 @@
             addRoom(roomname, roomsubtitle);
             genRoom(roomname, JSON.parse(j));
             window.roomname = roomname;
+            window.leftRoom = false;
+            window.lastPayloadServerTime = 0;
+            initMesh();  // sets window.peerid synchronously before createEventSource() reads it
+            loadJournal();
             createEventSource();
         }
+        // Watchdog: while down, ping a static file with backoff before reconnecting SSE
+        window.PING_INTERVAL_MIN = 5000;
+        window.PING_INTERVAL_MAX = 30000;
+        window.pingIntervalMs = window.PING_INTERVAL_MIN;
+
+        async function pingServer() {
+            try {
+                var controller = new AbortController();
+                var timeoutId = setTimeout(() => controller.abort(), 4000);
+                var resp = await fetch("ping.txt?_=" + Date.now(), { signal: controller.signal, cache: "no-store" });
+                clearTimeout(timeoutId);
+                // the server answered -- it's our login that's gone
+                if (resp.status == 401) noteSignedOut();
+                return resp.ok;
+            }
+            catch (e) {
+                return false;
+            }
+        }
+
+        function markConnectionLost() {
+            if (window.evtSource) {
+                try { window.evtSource.close(); } catch(e) {}
+            }
+            window.evtSource = null;
+            var firstFailure = (window.sseDownSince === null);
+            if (firstFailure) {
+                console.log("Connection lost.");
+                window.sseDownSince = Date.now();
+                window.pingIntervalMs = window.PING_INTERVAL_MIN;
+                setTimeout(updateOfflineBadge, 3100);
+            }
+            updateOfflineBadge();
+
+            if (firstFailure) {
+                // sseupdate cycles every 60s, so retry once quickly before treating this as an outage
+                setTimeout(() => {
+                    if (window.sseDownSince !== null && !window.relyingOnHost && !window.leftRoom) {
+                        createEventSource();
+                    }
+                }, 500);
+            }
+            else {
+                // The quick retry failed too: this is a real outage
+                window.confirmedOutage = true;
+                startConnectivityWatchdog();
+                announceOutageToPeers();
+            }
+        }
+
+        // One of our own requests failed while peers are connected: confirm the outage immediately
+        function confirmOutageNow() {
+            // Manage our own server connection again
+            resumeOwnSSE("own request failed");
+            if (!window.confirmedOutage) {
+                // a new outage: check back quickly, not at the previous one's backoff
+                window.pingIntervalMs = window.PING_INTERVAL_MIN;
+            }
+            if (window.sseDownSince === null) {
+                window.sseDownSince = Date.now() - 3001;
+            }
+            window.confirmedOutage = true;
+            updateOfflineBadge();
+            startConnectivityWatchdog();
+            announceOutageToPeers();
+        }
+
+        async function connectivityWatchdogTick() {
+            if (window.disableErrors || window.leftRoom || window.sseDownSince === null || window.relyingOnHost || window.signedOut) {
+                // Tearing down or reconnected: stop pinging
+                window.pingTimer = null;
+                return;
+            }
+            var alive = await pingServer();
+            if (alive) {
+                // Server reachable again: try the real reconnect
+                createEventSource();
+                window.pingTimer = setTimeout(connectivityWatchdogTick, window.PING_INTERVAL_MIN);
+            }
+            else {
+                window.pingIntervalMs = Math.min(window.pingIntervalMs * 2, window.PING_INTERVAL_MAX);
+                window.pingTimer = setTimeout(connectivityWatchdogTick, window.pingIntervalMs);
+            }
+        }
+
+        function startConnectivityWatchdog() {
+            if (window.pingTimer) return;  // already running
+            window.pingTimer = setTimeout(connectivityWatchdogTick, window.pingIntervalMs);
+        }
+
+        // Close SSE on navigation so the server frees its worker right away
+        window.addEventListener("pagehide", () => {
+            if (window.evtSource) {
+                try { window.evtSource.close(); } catch(e) {}
+            }
+            sendLeaveBeacon();
+        });
+        // restored from the back/forward cache: we said goodbye on the way out
+        window.addEventListener("pageshow", (e) => {
+            if (!e.persisted || !window.peerid || window.leftRoom) return;
+            refreshPresence();
+            if (!window.evtSource && !window.relyingOnHost) createEventSource();
+        });
+
+        // Tell the server this tab left, so it stops being elected host
+        function sendLeaveBeacon() {
+            if (!window.peerid || !window.roomname || window.leftRoom) return;
+            var url = `roomd.wsgi?setup=true&action=peerleave&room=${window.roomname}&peerid=${window.peerid}`;
+            // A keepalive fetch sends the login, unlike Safari's sendBeacon
+            try {
+                fetch(url, {method: "POST", keepalive: true, credentials: "same-origin"}).catch(() => {});
+            }
+            catch (e) {
+                try { navigator.sendBeacon(url); } catch (e2) {}
+            }
+        }
+
+        // Non-host tabs get room updates from the host and close their own SSE (see P2P.md)
+        window.relyingOnHost = false;
+        window.lastRelayAt = 0;
+        window.relayWatchdog = null;
+        window.RELAY_STALE_MS = 90000;   // host's own SSE recycles every 60s, relaying each time
+
+        window.lastPayloadServerTime = 0;
+        function applyServerPayload(json, fromOwnSSE) {
+            // Ignore payloads older than the one shown
+            if (typeof json.servertime === "number") {
+                if (json.servertime < window.lastPayloadServerTime) return;
+                window.lastPayloadServerTime = json.servertime;
+            }
+            window.serverJSON = json;
+            noteServerTime(json.servertime);
+            console.log(json);
+            // an empty response means the room was deleted.
+            if (Object.keys(json).length == 0) {
+                clearInterval(window.activityCheck);
+                returnToOverlay();
+                return;
+            }
+            dropAckedEntries(json.servertime);
+            renderRoom();
+            // anything still pending (ours or relayed) gets another go
+            if (window.sseDownSince === null) scheduleOfflineSync();
+            if (json.peers) {
+                window.knownPeers = json.peers;
+                reElectHost();
+            }
+            // signals are addressed to this tab's own SSE only; relayed copies have none
+            if (fromOwnSSE && json.signals && json.signals.length) {
+                json.signals.forEach(handleSignal);
+            }
+            // disableOperations is a hacky way to "rate limit" students from slamming the server
+            // with operations.
+            // this is INTENDED to be coupled with server responding with HTTP 429s to students
+            // who submit too many requests per second (cannot possibly be more than 3 requests per second).
+            window.disableOperations = false;
+            // Relay room updates to peers connected to us
+            if (fromOwnSSE) {
+                Object.values(window.hostChannels).forEach(dc => sendPayloadTo(dc, json));
+            }
+        }
+
+        function sendPayloadTo(dc, json) {
+            if (dc.readyState !== "open") return;
+            var copy = Object.assign({}, json);
+            delete copy.signals;
+            try { dc.send(JSON.stringify({type: "payload", room: window.roomname, data: copy})); }
+            catch (e) { console.error("could not relay room state:", e); }
+        }
+
+        function handleRelayedPayload(msg) {
+            if (window.amIHost || window.leftRoom || msg.room !== window.roomname || !window.upstreamTrusted) return;
+            var data = sanitizeRelayedPayload(msg.data);
+            if (!data) return;
+            window.lastRelayAt = Date.now();
+            if (window.relyingOnHost && window.sseDownSince !== null) {
+                // the host reached the server again
+                window.sseDownSince = null;
+                window.confirmedOutage = false;
+                updateOfflineBadge();
+                scheduleOfflineSync();
+                sendHeartbeat();     // covered by an owner host, or our own (rejoins if expired)
+            }
+            applyServerPayload(data, false);
+            maybeHandOffSSE();
+        }
+
+        function maybeHandOffSSE() {
+            if (window.amIHost || window.relyingOnHost || window.leftRoom || window.upstreamCannotServe || !window.upstreamTrusted) return;
+            if (!(window.meshChannel && window.meshChannel.readyState === "open")) return;
+            if (window.sseDownSince !== null) return;          // our own connection is unsettled
+            if (Date.now() - window.lastRelayAt > 5000) return; // need proof the host is relaying
+            window.relyingOnHost = true;
+            if (window.evtSource) {
+                try { window.evtSource.close(); } catch (e) {}
+                window.evtSource = null;
+            }
+            startRelayWatchdog();
+            console.log("Room updates now come from the host; closed own SSE.");
+        }
+
+        function resumeOwnSSE(reason) {
+            if (!window.relyingOnHost) return;
+            window.relyingOnHost = false;
+            stopRelayWatchdog();
+            // the host may have been heartbeating for us until now
+            sendHeartbeat();
+            console.log("Reopening own SSE:", reason);
+            if (!window.evtSource && !window.disableErrors && !window.leftRoom) createEventSource();
+        }
+
+        function startRelayWatchdog() {
+            stopRelayWatchdog();
+            window.relayWatchdog = setInterval(() => {
+                if (!window.relyingOnHost) return stopRelayWatchdog();
+                // during an outage the host has nothing to relay; the mesh is what matters then
+                if (window.sseDownSince !== null) return;
+                if (Date.now() - window.lastRelayAt > window.RELAY_STALE_MS) resumeOwnSSE("host stopped relaying");
+            }, 5000);
+        }
+
+        function stopRelayWatchdog() {
+            if (window.relayWatchdog) clearInterval(window.relayWatchdog);
+            window.relayWatchdog = null;
+        }
+
+        function announceOutageToPeers() {
+            // a signed-out tab can't tell whether the server is down at all
+            if (window.signedOut) return;
+            if (Object.keys(window.hostChannels).length) sendMeshAction({type: "serverdown"});
+        }
+
+        // Signed out (401): tell peers to use their own connections, and stay on as a relay
+        window.signedOut = false;
+        function noteSignedOut() {
+            if (window.signedOut) return;
+            window.signedOut = true;
+            console.warn("Signed out (401): reload the page to sign in again");
+            forwardToLinks(JSON.stringify({type: "hostlost"}), null);
+            updateOfflineBadge();
+        }
+
+        // Heartbeat: an owner host covers its peers in one request; others send their own
+        var HEARTBEAT_MS = 45000;
+        function coveredByHost() {
+            // the tab we're actually linked to, not whoever the election names
+            var upstream = window.knownPeers.find(p => p.peerid === window.meshHostId);
+            return window.relyingOnHost && !window.upstreamCannotServe && !!(upstream && upstream.owner) &&
+                Date.now() - window.lastRelayAt < HEARTBEAT_MS + 15000;
+        }
+
+        function sendHeartbeat() {
+            if (!window.peerid || window.leftRoom || window.signedOut || coveredByHost()) return;
+            var url = `roomd.wsgi?setup=true&action=peerheartbeat&room=${window.roomname}&peerid=${window.peerid}`;
+            var options;
+            if (window.is_owner) {
+                var peers = Object.keys(window.hostChannels).filter(pid => window.hostChannels[pid].readyState === "open");
+                if (peers.length) {
+                    options = {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({peers: peers})};
+                }
+            }
+            silentFetch(url, options)
+                .then(r => r.json())
+                .then(j => { if (j.status === "rejoin") refreshPresence(); })
+                .catch(() => {});
+        }
+
+        function refreshPresence() {
+            if (!window.peerid || window.leftRoom) return;
+            silentFetch(`roomd.wsgi?setup=true&action=peerjoin&room=${window.roomname}&peerid=${window.peerid}&v=${MESH_VERSION}`)
+                .then(r => r.json())
+                .then(j => {
+                    if (j.iceServers) window.iceServers = j.iceServers;
+                    noteServerTime(j.servertime);
+                    if (j.signkey && !window.signKey) importSignKey(j.signkey);
+                })
+                .catch(() => {});
+        }
+
+        // Idle: no queue changes and no clicks/typing on the page for IDLE_LIMIT_MS, and no exam timer running
+        window.IDLE_LIMIT_MS = 60 * 60 * 1000;
+        ["pointerdown", "keydown"].forEach(ev => document.addEventListener(ev, () => { window.lastActivity = Date.now(); }, true));
+
+        function checkIdle() {
+            if (window.idlePaused || window.leftRoom || !window.roomname) return;
+            var timer = document.getElementById("timer");
+            if (timer && timer.style.display == "flex") return;
+            if (Date.now() - (window.lastActivity || Date.now()) >= window.IDLE_LIMIT_MS) pauseForInactivity();
+        }
+
+        // Stop everything live (server connection, mesh, timers) without leaving any queue; Reconnect reloads the room
+        function pauseForInactivity() {
+            window.idlePaused = true;
+            window.disableErrors = true;
+            sendLeaveBeacon();
+            window.leftRoom = true;
+            if (window.evtSource) { try { window.evtSource.close(); } catch (e) {} window.evtSource = null; }
+            [window.activityCheck, window.heartbeatTimer, window.presenceTimer, window.relayWatchdog].forEach(t => clearInterval(t));
+            [window.pingTimer, window.syncTimer, window.signalFlushTimer].forEach(t => clearTimeout(t));
+            window.pingTimer = window.syncTimer = window.signalFlushTimer = null;
+            window.relyingOnHost = false;
+            var conns = [window.meshConn, window.pendingConn && window.pendingConn.pc].concat(Object.values(window.hostConns), Object.values(window.hostPending));
+            conns.forEach(pc => { if (pc) { try { pc.close(); } catch (e) {} } });
+            window.meshConn = window.meshChannel = window.pendingConn = null;
+            window.hostConns = {}; window.hostChannels = {}; window.hostPending = {};
+            document.documentElement.setAttribute("offlinemode", "none");
+            var banner = document.getElementById("idlebanner");
+            if (banner) banner.style.display = "flex";
+        }
+
+        function reloadRoom() {
+            location.href = location.pathname + "?room=" + encodeURIComponent(window.roomname);
+        }
+
         function createEventSource() {
+            if (window.idlePaused) return;
             if (typeof(EventSource) !== "undefined") {
-                window.evtSource = new EventSource("roomd.wsgi?sseupdate=true&room=" + window.roomname);
+                var sseUrl = "roomd.wsgi?sseupdate=true&room=" + window.roomname;
+                if (window.peerid) sseUrl += "&peerid=" + window.peerid;
+                if (window.evtSource) {
+                    try { window.evtSource.close(); } catch(e) {}
+                }
+                window.evtSource = new EventSource(sseUrl);
                 window.evtSource.onopen = function() {
                     console.log("Connection established.");
                     document.getElementsByClassName("queueoverlay")[0].style.display = "none";
+                    var wasOutage = window.confirmedOutage;
+                    window.pingIntervalMs = window.PING_INTERVAL_MIN;
+                    var downFor = window.sseDownSince === null ? 0 : Date.now() - window.sseDownSince;
+                    window.sseDownSince = null;
+                    window.confirmedOutage = false;
+                    updateOfflineBadge();
+                    if (wasOutage) sendMeshAction({type: "serverback"});
+                    scheduleOfflineSync();
+                    // Refresh presence only after an outage long enough for it to expire
+                    if (wasOutage || downFor > 60000) sendHeartbeat();
                 };
                 window.evtSource.onmessage = function(event) {
-                    var json = JSON.parse(event.data);
-                    window.lastJSON = json;
-                    // an empty response means the room was deleted. 
-                    // close the event source and return to the overlay.
-                    console.log(json);
-                    if (Object.keys(json).length == 0) {
-                        clearInterval(window.activityCheck);
-                        returnToOverlay();
-                        return;
-                    }
-                    else {
-                        genRoom(window.roomname, json);
-                    }
-                    // disableOperations is a hacky way to "rate limit" students from slamming the server
-                    // with operations.
-                    // this is INTENDED to be coupled with server responding with HTTP 429s to students 
-                    // who submit too many requests per second (cannot possibly be more than 3 requests per second).
-                    window.disableOperations = false;
+                    applyServerPayload(JSON.parse(event.data), true);
                 };
                 window.evtSource.onerror = async () => {
-                    function handleError(test={'status': 0}, err) {
-                        window.evtSource = null;
-                        delete window.evtSource;
-                        if (test.status == 400) {
-                            alert("An unknown error occurred while trying to reconnect to the server.  The returned status was 400, which could mean the room was deleted.");
-                            returnToOverlay();
-                        }
-                        else if ((test.status == 502) || (test.status == 503)) {
-                            console.error("Server returned 502/503.  Could be restarting, waiting for 10 seconds before retrying...");
-                            setTimeout(createEventSource, 10000);
-                        }
-                        else {
-                            if (test.status == 0) {
-                                // alert("An unknown error occurred while trying to reconnect to the server.  The returned error was: " + err.toString());
-                            }
-                            else {
-                                // alert("An unknown error occurred while trying to reconnect to the server.  The returned status was: " + test.status);
-                            }
-                            if (err) {
-                                console.error(err);
-                            }
-                        }
-                        // retry...
-                    }
+                    // Starts the ping-backoff watchdog
                     if (!window.disableErrors) {
-                        if (window.evtSource)
-                            window.evtSource.close();
-                        console.log("Connection lost.");
-                        window.evtSource = null;
-                        delete window.evtSource;
-                        // retry...
-                        setTimeout(createEventSource, 1000);
+                        markConnectionLost();
                     }
                 }
-                // create an interval to check for activity every 1 hour.
-                // closeRoom if no activity is detected.
+                // Pause the room's live connection after an hour without activity (see checkIdle)
                 if (!window.lastActivity)
                     window.lastActivity = Date.now();
-                window.activityCheck = setInterval(() => {
-                    // if not set, create a start time
-                    // if the last activity was more than 1 hour ago, close the room.
-                    if ((Date.now() - window.lastActivity) >= 60*60*1000 && (timerdiv.style.display != "flex")) {
-                        returnToOverlay();
-                        alert("No activity detected for 1 hour, room closed.  Do not keep the room open if you are not using it!");
-                    }
-                }, 60*60*1000);
+                // reopened on every reconnect/handoff: keep only one
+                clearInterval(window.activityCheck);
+                window.activityCheck = setInterval(checkIdle, 60 * 1000);
             }
             else {
                 alert("This browser does not support Server-Sent Events, which is required to handle room functionality.  Use a more modern browser like Firefox or Chrome.");
@@ -427,7 +1681,10 @@
             // in {"user": "Full Name"}, change to "user": "Full N."}
             if (json["names"]) {
                 Object.keys(json["names"]).forEach(k => {
-                    json["names"][k] = json["names"][k].split(" ")[0] + " " + json["names"][k].split(" ")[1].slice(0, 1) + ".";
+                    var parts = String(json["names"][k]).split(" ");
+                    if (parts.length > 1 && parts[1]) {
+                        json["names"][k] = parts[0] + " " + parts[1].slice(0, 1) + ".";
+                    }
                 });
             }
 
@@ -437,7 +1694,9 @@
             .map(_q => _q.id.slice(5))                    // get the queue names
             .filter(_q => _q && !Object.keys(queues).includes(_q)).forEach(_q => {     // queues that are not in the JSON...
                 document.querySelector(`#queue${_q}`).remove();     // ...must be removed. start with the queue
-                document.querySelector(`[queue=${_q}]`).parentNode.remove(); // and then the title div.
+                // Remove the title unless renameQueue() already did
+                var title = document.querySelector(`[queue=${_q}]`);
+                if (title) title.parentNode.remove();
             });
             Object.keys(queues).forEach(_q => {
                 if (document.querySelector(`#queue${_q}`) == null) {
@@ -580,12 +1839,9 @@
         }
         window.onload = async () => {
             document.body.style.opacity = 1;
+            updateP2PButton();
             clock();
-            // initialize if not set
-            if (!localStorage.darkmode) {
-                localStorage.darkmode = "false";
-            }
-            if (localStorage.darkmode == "true") {
+            if (prefGet("darkmode") == "true") {
                 document.documentElement.setAttribute("theme", "dark");
             }
             else {
@@ -685,8 +1941,59 @@
                 document.querySelector(`#queue${queue}`).appendChild(added);
             }
         }
+        // Queue actions go to the server, or over the mesh during an outage or a 2s+ wait
+        var SLOW_REQUEST_MS = 2000;
+        function serverOrMesh(url, actionMsg, onResponse, onError) {
+            actionMsg.id = crypto.randomUUID();
+            actionMsg.t = Math.round(serverNow());
+            if (shouldUseMeshRelay()) {
+                relayAndApplyAction(actionMsg);
+                window.disableOperations = false;
+                return;
+            }
+            var relayed = false, answered = false;
+            function relayInstead() {
+                if (relayed || !meshConnected()) return;
+                relayed = true;
+                confirmOutageNow();   // later actions skip the wait entirely
+                relayAndApplyAction(actionMsg);
+                window.disableOperations = false;
+            }
+            var slowTimer = setTimeout(() => { if (!answered) relayInstead(); }, SLOW_REQUEST_MS);
+            fetchAndLimit(url + `&t=${actionMsg.t}&opid=${actionMsg.id}`, {meshFallback: true})
+            .then(r => {
+                answered = true;
+                clearTimeout(slowTimer);
+                if (r.status == 503) {
+                    // never reached the server (or gave up waiting)
+                    relayInstead();
+                    return;
+                }
+                // the server decided, so the mesh copy (if any) is redundant
+                if (relayed) retractEnvelope(actionMsg.id);
+                window.disableOperations = false;
+                if (onResponse) return onResponse(r);
+            })
+            .catch(err => {
+                answered = true;
+                clearTimeout(slowTimer);
+                if (window.signedOut && meshConnected()) {
+                    // signed out: a peer can still sync this signed action for us
+                    if (!relayed) { relayed = true; relayAndApplyAction(actionMsg); }
+                    window.disableOperations = false;
+                    return;
+                }
+                if (relayed) retractEnvelope(actionMsg.id);
+                window.disableOperations = false;
+                if (onError) onError(err);
+            });
+        }
+        function ownerActionOrRelay(url, actionMsg) {
+            serverOrMesh(url, actionMsg);
+        }
         function delFromRoomTA(username, queue) {
-            fetchAndLimit(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`);
+            ownerActionOrRelay(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}&username=${username}`,
+                {action: "usdel", queue: queue, target: username});
             var list = Array.from(document.querySelector(`#queue${queue}`).children).filter(e => e.classList.contains('waiter') && e.querySelector('#username_text').innerHTML == username);
             if (list.length > 0) {
                 list[0].remove();
@@ -709,31 +2016,24 @@
                             }
                         }
                         window.userdata = userdata;
-                        fetchAndLimit(`roomd.wsgi/?action=add&room=${window.roomname}&queue=${queue}&waitdata=${userdata}`)
-                        .then(r => r.text())
-                        .then(t => {
-                            if (t.startsWith("[cooldown]")) {
-                                alert(t.split(" ").slice(1).join(" "));
-                                // delSelf(queue);
-                            }
-                            else if (t.startsWith("[singlequeue]")) {
-                                alert(t.split(" ").slice(1).join(" "));
-                                // delSelf(queue);
-                                window.disableOperations = false;
-                            }
-                        })
-                        .catch(err => {
-                            window.disableOperations = false;
-                            if (err.includes("Room locked")) {
-                                delSelf(queue);
-                            }
-                            else if (err.includes("[cooldown]")) {
-                                delSelf(queue);
-                            }
-                        })
+                        serverOrMesh(`roomd.wsgi/?action=add&room=${window.roomname}&queue=${queue}&waitdata=${userdata}`,
+                            {action: "uadd", queue: queue, waitdata: userdata},
+                            r => r.text().then(t => {
+                                if (t.startsWith("[cooldown]") || t.startsWith("[singlequeue]")) {
+                                    alert(t.split(" ").slice(1).join(" "));
+                                }
+                            }),
+                            err => {
+                                // err is a string for fetchAndLimit's rejections, an Error for network failures
+                                var errStr = (typeof err === 'string') ? err : ((err && err.message) || String(err));
+                                if (errStr.includes("Room locked") || errStr.includes("[cooldown]")) {
+                                    delSelf(queue);
+                                }
+                            });
                     }
                     else {
-                        fetchAndLimit(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}`);
+                        serverOrMesh(`roomd.wsgi/?action=del&room=${window.roomname}&queue=${queue}`,
+                            {action: "udel", queue: queue});
                     }
                     // No longer necessary - sseupdate should add this in for us.
                     // var qlist = document.querySelector(`#queue${queue}`).children;
@@ -781,6 +2081,8 @@
         function addBtnHandler(event, queue) {
             if (window.disableOperations) return;
             window.disableOperations = true;
+            // Safety net: re-enable queue buttons after 5s whatever happens below
+            setTimeout(() => { window.disableOperations = false; }, 5000);
             if (event.currentTarget.classList.contains("waiter-add")) {
                 // then we're adding a new one
                 performOp('add', queue);
@@ -832,6 +2134,11 @@
                 return;
             }
             var r = await fetchAndLimit(`roomd.wsgi/?setup=true&action=ren&room=${window.roomname}&queue=${curTarget.getAttribute("queue")}&newqueue=${curTarget.innerHTML}`);
+            if (r.status == 503) {
+                // fetchAndLimit already said the server can't be reached
+                curTarget.innerHTML = curTarget.getAttribute("queue");
+                return;
+            }
             if (r.status != 200) {
                 alert("An error occurred while renaming the queue.  Please try again.");
                 curTarget.innerHTML = curTarget.getAttribute("queue");
@@ -896,7 +2203,18 @@
             }
             var newhtml = parser.parseFromString(`
             <div class="roomtop">
-                <p class="roomtitle">Room ${room}</p>
+                <div class="roomtitlerow">
+                    <p class="roomtitle">Room ${room}</p>
+                    <p id="offlinebadge" onclick="explainOfflineBadge()"></p>
+                    <div id="outageswitch" title="Testing: cut this tab off from the QueUp server">
+                        <div class="outageswitch-inner">
+                            <span>Simulate outage</span>
+                            <span class="switchCylinder" role="switch" aria-label="simulate_outage" onclick="toggleSimulatedOutage()">
+                                <span class="switchCircle" id="outageSwitchCircle"></span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
                 <div class="helpdiv row">${subtitle_p}</div>
             </div>`, 'text/html');
             var elm = newhtml.body.children[0];
@@ -911,7 +2229,8 @@
                 alert("You are not authorized to clear this queue.  Unauthorized requests will be logged.");
                 return;
             }
-            fetchAndLimit(`roomd.wsgi/?setup=true&action=clear&room=${window.roomname}&queue=${queue}`);
+            ownerActionOrRelay(`roomd.wsgi/?setup=true&action=clear&room=${window.roomname}&queue=${queue}`,
+                {action: "qclr", queue: queue});
         }
         function markOrDelUser(event, action='mark') {
             if (!window.is_owner) {
@@ -922,7 +2241,10 @@
             var username = event.currentTarget.parentNode.parentNode.querySelector("#username_text").innerHTML;
             if (action == 'mark') {
                 // send a "mark" signal for this user.  if already marked, will be unmarked.
-                fetchAndLimit(`roomd.wsgi/?setup=true&action=mark&room=${window.roomname}&queue=${queue}&username=${username}`);
+                // offline, send the mark as an absolute value so a replay can't flip it twice
+                var entry = ((window.lastJSON && window.lastJSON[window.roomname] || {})[queue] || []).find(e => e[0] == username);
+                ownerActionOrRelay(`roomd.wsgi/?setup=true&action=mark&room=${window.roomname}&queue=${queue}&username=${username}`,
+                    {action: "qmrk", queue: queue, target: username, value: (entry && entry[3] == "1") ? "0" : "1"});
             }
             else {
                 // delete user from queue. 
@@ -942,13 +2264,10 @@
         }
         // for later theme changes
         function switchTheme() {
-            if (localStorage.darkmode == "true") {
-                localStorage.darkmode = "false";
-            }
-            else {
-                localStorage.darkmode = "true";
-            }
-            document.documentElement.setAttribute("theme", localStorage.darkmode == "true" ? "dark" : "light");
+            // toggle from what's shown, so this still works without storage
+            var dark = document.documentElement.getAttribute("theme") != "dark";
+            prefSet("darkmode", dark ? "true" : "false");
+            document.documentElement.setAttribute("theme", dark ? "dark" : "light");
         }
         async function toggleRoomLock() {
             try {
@@ -1034,8 +2353,8 @@
         document.querySelector("#createroombtn").addEventListener('click', createRoom);
         document.querySelector("#joinroombtn").addEventListener('click', joinRoom);
         document.querySelector("#genroom").addEventListener('click', generateRandomRoomName);
-        if (localStorage.lastjoinedroom) {
-            document.getElementById("joinroom").value = localStorage.lastjoinedroom;
+        if (prefGet("lastjoinedroom")) {
+            document.getElementById("joinroom").value = prefGet("lastjoinedroom");
         }
 
         function copyUsername(event) {
@@ -1261,12 +2580,12 @@
 
         // Initialize preferences on load
         window.addEventListener('DOMContentLoaded', () => {
-            const savedSound = localStorage.getItem('queup_sound') || '/sounds/bell.mp3';
+            const savedSound = prefGet('queup_sound') || 'sounds/bell.mp3';
             document.getElementById('sound-library').value = savedSound;
             currentSound = new Audio(savedSound);
 
             // Enable notifications if saved in localstorage
-            if (localStorage.getItem('queup_notifications') === 'true') {
+            if (prefGet('queup_notifications') === 'true') {
                 toggleNotifications();
             }
         });
@@ -1282,7 +2601,7 @@
                         notificationsEnabled = true;
                         btn.innerHTML = '🔔';
                         select.style.display = 'inline-block';
-                        localStorage.setItem('queup_notifications', 'true');
+                        prefSet('queup_notifications', 'true');
                     } else {
                         alert('Please allow browser notifications to use this feature.');
                     }
@@ -1291,14 +2610,14 @@
                 notificationsEnabled = false;
                 btn.innerHTML = '🔕';
                 select.style.display = 'none';
-                localStorage.setItem('queup_notifications', 'false');
+                prefSet('queup_notifications', 'false');
             }
         }
 
         function changeSoundPreference() {
             const selected = document.getElementById('sound-library').value;
             currentSound = new Audio(selected);
-            localStorage.setItem('queup_sound', selected);
+            prefSet('queup_sound', selected);
             
             // Play a quick test sound so the user knows what they selected
             currentSound.play().catch(e => console.log('Audio test failed:', e));

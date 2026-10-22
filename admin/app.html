@@ -222,15 +222,35 @@
             "rperm": [ "Toggle room permanency", "room" ],
             "r1q": [ "Toggle single queue", "room" ],
             "rtimer": [ "Set exam timer", "room", "op" ],
-            "rbcast": [ "Sent broadcast message", "room" ]
+            "rbcast": [ "Sent broadcast message", "room" ],
+            "ouadd": [ "Added self to queue (offline, synced)", "room", "queue", "synced by", "identifier" ],
+            "oudel": [ "Removed self from queue (offline, synced)", "room", "queue", "synced by" ],
+            "ousdel": [ "Staff removed user from queue (offline, synced)", "room", "queue", "synced by", "username" ],
+            "oqmrk": [ "Staff marked/unmarked user (offline, synced)", "room", "queue", "synced by", "username", "marked" ],
+            "oqclr": [ "Staff cleared queue (offline, synced)", "room", "queue", "synced by" ],
+            "orej": [ "Offline action rejected at sync", "room", "queue", "synced by", "action", "reason" ]
         };
+        function isQueueCode(code) {
+            return code.startsWith("q") || code.startsWith("u") || code.startsWith("o");
+        }
+        function csvField(v) {
+            v = (v === undefined || v === null) ? "" : String(v);
+            return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+        }
         function actionDescription(code) {
             return ACTIONS[code] ? ACTIONS[code][0] : code;
         }
         function fetchAndLimit(url, options) {
             return new Promise(async (resolve, reject) => {
+                // Fail fast instead of hanging when the server is unreachable
+                var timeoutController = new AbortController();
+                var timeoutId = setTimeout(() => timeoutController.abort(), 8000);
+                var fetchOptions = Object.assign({}, options, {
+                    signal: (options && options.signal) || timeoutController.signal
+                });
                 try {
-                    var resp = await fetch(url, options);
+                    var resp = await fetch(url, fetchOptions);
+                    clearTimeout(timeoutId);
                     if (resp.status == 429) {
                         alert("You appear to be sending too many requests.  Please slow down.");
                         reject("Too many requests");
@@ -250,8 +270,11 @@
                     resolve(resp);
                 }
                 catch(err) {
+                    // Network failure: alert, and return a synthetic 503 instead of rejecting
+                    clearTimeout(timeoutId);
                     console.log("err", err);
-                    reject(err);
+                    alert("Could not reach the server. Please check your connection and try again.");
+                    resolve(new Response("{}", {status: 503, statusText: "Network Error"}));
                 }
             })
         }
@@ -388,7 +411,7 @@
                 }
                 action.innerHTML = actionDescription(a[3]);
                 // if this is a queue- or user-related action...
-                if (a[3].startsWith("q") || a[3].startsWith("u")) {
+                if (isQueueCode(a[3])) {
                     queue.innerHTML = a[5];
                 }
                 else {
@@ -399,7 +422,7 @@
                 misc.style.cursor = "pointer";
                 misc.addEventListener("click", () => {
                     // show what remaining keys there are for this action
-                    var keys = ACTIONS[a[3]].slice(1);
+                    var keys = ACTIONS[a[3]] ? ACTIONS[a[3]].slice(1) : [];
                     var values = a.slice(4);
                     var msg = "";
                     for (var i = 0; i < keys.length; i++) {
@@ -423,10 +446,10 @@
             var data = json.map(a => {
                 var datetime = new Date(parseFloat(a[0]) * 1000).toLocaleString().replace(", ", "-");
                 var action = actionDescription(a[3]);
-                var isQueueAction = a[3].startsWith("q") || a[3].startsWith("u");
+                var isQueueAction = isQueueCode(a[3]);
                 var queue = isQueueAction ? a[5] : "n/a";
                 var other = (isQueueAction ? [a[4]].concat(a.slice(6)) : a.slice(4)).join(" ");
-                return [datetime, a[1], a[2], action, queue, other].join(",");
+                return [datetime, a[1], a[2], action, queue, other].map(csvField).join(",");
             }).join("\n");
             var blob = new Blob(["Date/Time,User,Section,Action,Queue,Other\n", data], {type: "text/csv"});
             var dlink = document.createElement('a');

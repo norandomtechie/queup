@@ -4,6 +4,9 @@ import os
 import json
 import re
 import sys
+import hmac
+import hashlib
+import base64
 
 from time import time
 from functools import reduce
@@ -12,19 +15,62 @@ from urllib.parse import parse_qs
 import redis # type: ignore
 
 # grab config based on IP and init all variables
+# NOTE: this import-time value is only a fallback -- application() below
+# resolves the real per-request path via lib.privatepath, which does not
+# depend on this file's own location and so can be imported before that
+# path is knowable.
 private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 
-sys.path.append(os.environ['PWD'] + '/queup')
+# Import sibling modules relative to this script, not the worker's working directory
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Drop cached lib modules so touching this file also reloads lib/
+for _name in [n for n in sys.modules if n in ("lib", "alib") or n.startswith(("lib.", "alib."))]:
+    del sys.modules[_name]
 from lib.lock import *
 from lib.methods import *
 from lib.ratelimiter import *
 from lib.wsgidefs import *
+from lib.privatepath import resolve_private_path
+from lib.offlinesync import issue_peer_key, apply_offline_batch, MAX_BATCH, get_peer_records, mark_present, MAX_HEARTBEAT_BATCH
+import lib.methods
+import lib.lock
+
+# Peer-to-peer (see P2P.md)
+def mint_ice_servers(user):
+    """Time-limited TURN credentials (coturn use-auth-secret) plus a public STUN server."""
+    secret = open(private + 'turn_secret').read().strip()
+    expiry = int(time()) + 4 * 3600  # 4h TTL
+    turn_user = f"{expiry}:{user}"
+    dig = hmac.new(secret.encode(), turn_user.encode(), hashlib.sha1).digest()
+    turn_pass = base64.b64encode(dig).decode()
+    return [
+        {"urls": "stun:stun.l.google.com:19302"},
+        # UDP first, TCP for networks that block UDP
+        {"urls": "turn:verilog.ecn.purdue.edu:3478",
+         "username": turn_user, "credential": turn_pass},
+        {"urls": "turn:verilog.ecn.purdue.edu:3478?transport=tcp",
+         "username": turn_user, "credential": turn_pass}
+    ]
+
+def request_intent(query, user):
+    """(click time capped at now, "user:opid") sent with queue actions; (None, None) from older clients."""
+    try:
+        at = min(int(query.get('t', '')) / 1000.0, time())
+    except ValueError:
+        at = None
+    opid = query.get('opid', '')
+    # namespaced by the authenticated user, so nobody can mark someone else's operation as decided
+    return at, (user + ":" + opid if re.match(PEERID_RGX, opid) else None)
+
+STALE_MSG = "[stale] A newer change was already made, so this older request was not applied."
 
 def application(environ, start_response):
     global ip, private, rds
 
-    # grab config based on IP and init all variables
-    private = environ['DOCUMENT_ROOT'] + environ['CONTEXT_PREFIX'].replace('~', '') + '/private/queup/'
+    # Use the private dir of the tree serving this request (see lib/privatepath.py)
+    private = resolve_private_path(environ)
+    lib.methods.set_private_path(private)
+    lib.lock.set_private_path(private)
 
     # don't run unless redis is up
     try:
@@ -56,7 +102,7 @@ def application(environ, start_response):
         return ret_400(start_response, "Invalid room name " + room)
     
     action = query.get('action', '')
-    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast']
+    actions = ['add', 'del', 'chk', 'ren', 'own', 'delown', 'setcool', 'setsub', 'lock', 'unlock', 'clear', 'mark', 'setperm', 'tgl1q', 'timer', 'broadcast', 'turn', 'peerjoin', 'peerheartbeat', 'peerleave', 'signalsend', 'offlinesync']
     if 'sseupdate' not in query and not (action in actions):
         return ret_400(start_response, "Invalid action " + action)
     setup = query.get('setup', '')
@@ -71,11 +117,15 @@ def application(environ, start_response):
         is_owner = (user in owners) or (is_section0 == "0") or (user == 'menon18')
         valid_actions = [
             # only check if room exists, allowed for non-owner
-            action in ['chk'],   
+            action in ['chk'],
             # watch room, allowed for non-owner
-            'sseupdate' in query,  
+            'sseupdate' in query,
             # add/del to a queue, allowed for non-owner
-            (action in ['add', 'del'] and querychecked)  
+            (action in ['add', 'del'] and querychecked),
+            # TURN, presence and signaling: any room participant
+            action in ['turn', 'peerjoin', 'peerheartbeat', 'peerleave', 'signalsend'],
+            # Offline sync: authorized per envelope by signature (see lib/offlinesync.py)
+            action == 'offlinesync',
         ]
         # if db exists, but we're not add/del to a queue, and we're not owner, then bad request.
         if not any(valid_actions) and not is_owner:
@@ -101,6 +151,14 @@ def application(environ, start_response):
     will_timer = action == 'timer' and "room"+room in rooms
     will_broadcast = action == 'broadcast' and "room"+room in rooms
     ### END ADDED
+
+    # Peer-to-peer actions
+    will_turn = action == 'turn' and "room"+room in rooms
+    will_peerjoin = action == 'peerjoin' and "room"+room in rooms
+    will_peerheartbeat = action == 'peerheartbeat' and "room"+room in rooms
+    will_signalsend = action == 'signalsend' and "room"+room in rooms
+    will_peerleave = action == 'peerleave' and "room"+room in rooms
+    will_offlinesync = action == 'offlinesync' and "room"+room in rooms
 
     # this section handles adding and removing in a room
     if roomsetup:
@@ -176,6 +234,138 @@ def application(environ, start_response):
             except Exception as e:
                 return ret_400(start_response, str(e))
         ### END ADDED
+
+        # Peer-to-peer actions (see P2P.md)
+        elif will_turn:
+            # Any participant; peerjoin already returns ICE servers, so this is only for renewal
+            try:
+                return ret_json(start_response, json.dumps({"iceServers": mint_ice_servers(user)}))
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        elif will_peerjoin:
+            # Any participant; is_owner is computed server-side
+            peerid = query.get('peerid', '')
+            if not re.match(PEERID_RGX, peerid):
+                return ret_400(start_response, "Invalid peerid")
+            try:
+                # Signing key for offline actions (refused if the peerid belongs to someone else)
+                try:
+                    version = max(0, min(int(query.get('v', '0')), 10**6))
+                except ValueError:
+                    version = 0
+                signkey = issue_peer_key(room, peerid, user, version)
+                if signkey is None:
+                    return ret_400(start_response, "peerid already in use")
+                records = get_peer_records(room, [peerid])
+                if mark_present(room, records, getowners(room)):
+                    rds.set("peerjoin"+room, "1", ex=5)
+                # ICE servers and server time ride along, so joining is one round trip
+                return ret_json(start_response, json.dumps({
+                    "status": "joined", "iceServers": mint_ice_servers(user),
+                    "signkey": signkey, "servertime": time()
+                }))
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        elif will_peerheartbeat:
+            peerid = query.get('peerid', '')
+            if not re.match(PEERID_RGX, peerid):
+                return ret_400(start_response, "Invalid peerid")
+            try:
+                own = get_peer_records(room, [peerid])
+                if peerid not in own or own[peerid]["user"] != user:
+                    # never joined (or its record expired): the tab must peerjoin
+                    return ret_json(start_response, json.dumps({"status": "rejoin"}))
+                records = dict(own)
+                # An owner host may heartbeat for peers that joined themselves (see P2P.md)
+                covered = 0
+                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
+                if is_owner and 0 < length <= 64 * 1024:
+                    body = json.loads(environ['wsgi.input'].read(length).decode('utf-8', errors='replace'))
+                    others = [p for p in body.get('peers', []) if isinstance(p, str) and re.match(PEERID_RGX, p)]
+                    extra = get_peer_records(room, others[:MAX_HEARTBEAT_BATCH])
+                    covered = len(extra)
+                    records.update(extra)
+                # Only a (re)appearing peer triggers an SSE broadcast
+                if mark_present(room, records, getowners(room)):
+                    rds.set("peerjoin"+room, "1", ex=5)
+                return ret_json(start_response, json.dumps({"status": "ok", "covered": covered}))
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        elif will_signalsend:
+            from_peerid = query.get('peerid', '')
+            if not re.match(PEERID_RGX, from_peerid):
+                return ret_400(start_response, "Invalid peerid")
+            # only the user who joined with this peerid may signal as it
+            rec = get_peer_records(room, [from_peerid]).get(from_peerid)
+            if rec is None or rec["user"] != user:
+                return ret_400(start_response, "Not your peer")
+            try:
+                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
+            except ValueError:
+                length = 0
+            body = environ['wsgi.input'].read(length).decode('utf-8', errors='replace') if length else ""
+            try:
+                payload = json.loads(body)
+                messages = payload.get('messages', [])
+                if not isinstance(messages, list) or len(messages) == 0:
+                    raise ValueError("messages must be a non-empty list")
+                by_target = {}
+                for m in messages:
+                    to_peerid = m.get('to', '')
+                    if not re.match(PEERID_RGX, to_peerid):
+                        raise ValueError("Invalid target peerid")
+                    if m.get('type') not in ('offer', 'answer', 'ice'):
+                        raise ValueError("Invalid message type")
+                    entry = {"from": from_peerid, "type": m['type'], "payload": m.get('payload', {})}
+                    by_target.setdefault(to_peerid, []).append(entry)
+                for to_peerid, entries in by_target.items():
+                    existing = rds.hget("signal"+room, to_peerid)
+                    current = json.loads(existing) if existing else []
+                    current.extend(entries)
+                    rds.hset("signal"+room, to_peerid, json.dumps(current))
+                rds.expire("signal"+room, 120)
+                return ret_ok(start_response, "sent")
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        elif will_peerleave:
+            # A closing tab leaves now instead of lingering up to 90s; its signing key stays for sync
+            peerid = query.get('peerid', '')
+            if not re.match(PEERID_RGX, peerid):
+                return ret_400(start_response, "Invalid peerid")
+            try:
+                rec = get_peer_records(room, [peerid]).get(peerid)
+                if rec is None or rec["user"] != user:
+                    return ret_400(start_response, "Not your peer")
+                removed = rds.zrem("peers"+room, peerid)
+                rds.hdel("peermeta"+room, peerid)
+                if removed:
+                    rds.set("peerjoin"+room, "1", ex=5)   # others re-elect now
+                return ret_ok(start_response, "left")
+            except Exception as e:
+                return ret_400(start_response, str(e))
+        elif will_offlinesync:
+            try:
+                length = int(environ.get('CONTENT_LENGTH', 0) or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 128 * 1024:
+                return ret_400(start_response, "Body missing or too large")
+            body = environ['wsgi.input'].read(length).decode('utf-8', errors='replace')
+            try:
+                envelopes = json.loads(body).get('envelopes', [])
+                if not isinstance(envelopes, list) or len(envelopes) > MAX_BATCH:
+                    raise ValueError("envelopes must be a list of at most %d items" % MAX_BATCH)
+            except Exception as e:
+                return ret_400(start_response, str(e))
+            # Stamped before applying, so later room updates carry a later servertime
+            synced_at = time()
+            try:
+                results, log_lines = apply_offline_batch(room, envelopes, user)
+            except redis.RedisError as e:
+                return ret_500(start_response, "RedisError: " + str(e))
+            for row in log_lines:
+                lockAndWriteLog(room, ",".join(row))
+            return ret_json(start_response, json.dumps({"results": results, "servertime": synced_at}))
         else:
             if not is_owner:
                 return ret_401(start_response, "User is not an owner of room.")
@@ -276,14 +466,26 @@ def application(environ, start_response):
                     lockAndWriteLog(room, ",".join([str(time()), user, "qren", room, queue, newqueue]))
                     return ret_ok(start_response, json.dumps(getusers("", room)))
                 elif will_clear:
-                    # get all users and remove them from the queue
-                    for u in getusers(queue, room):
-                        delquser(u[0], queue, room)
+                    at, opid = request_intent(query, user)
+                    try:
+                        clearqueue(queue, room, at, opid)
+                    except StaleAction:
+                        recordop(room, opid)
+                        return ret_ok(start_response, STALE_MSG)
+                    except DuplicateAction:
+                        return ret_ok(start_response, json.dumps(getusers("", room)))
                     lockAndWriteLog(room, ",".join([str(time()), user, "qclr", room, queue]))
                     return ret_ok(start_response, json.dumps(getusers("", room)))
                 elif will_mark:
                     # toggle mark on user
-                    togglemark(username, queue, room)
+                    at, opid = request_intent(query, user)
+                    try:
+                        togglemark(username, queue, room, at, opid)
+                    except StaleAction:
+                        recordop(room, opid)
+                        return ret_ok(start_response, STALE_MSG)
+                    except DuplicateAction:
+                        return ret_ok(start_response, json.dumps(getusers("", room)))
                     lockAndWriteLog(room, ",".join([str(time()), user, "qmrk", room, queue, username]))
                     return ret_ok(start_response, json.dumps(getusers("", room)))
                 else:
@@ -311,7 +513,9 @@ def application(environ, start_response):
         will_add = action == 'add' and not any([user == x[0] for x in db_queue]) # username should not be in the room already
         will_del = action == 'del' and any([user == x[0] for x in db_queue]) and (username == '') # username was in the room and is not someone else or empty
         staff_del = is_owner and action == 'del' and username is not None and any([username == x[0] for x in db_queue]) # username was in the room
+        at, opid = request_intent(query, user)
         if isroomlocked(room) and not is_owner and will_add:
+            recordop(room, opid)
             return ret_423(start_response, "Room is locked.")
         # only make changes to database if changes are to be made
         try:
@@ -324,29 +528,41 @@ def application(environ, start_response):
                     if (time() - lastadd) < (cooldown * 60):
                         rem_min = int(cooldown - (time() - lastadd) / 60)
                         rem_sec = int((cooldown - (time() - lastadd) / 60) % 1 * 60)
+                        recordop(room, opid)
                         return ret_ok(start_response, "[cooldown] This room only permits you to add yourself to any queue every %d minutes. Please wait %d minutes and %s seconds before adding yourself again." % (cooldown, rem_min, rem_sec))
                 if get1q(room):
                     # ensure that user is not in any other queues
                     for q in getqueues(room):
                         if any([user == x[0] for x in getusers(q, room)]):
+                            recordop(room, opid)
                             return ret_ok(start_response, "[singlequeue] You are already in a queue.")
                 waitdata = query.get('waitdata', '')
                 if waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
                     return ret_400(start_response, "Invalid waitdata.")
-                addquser(user, waitdata, queue, room)
+                addquser(user, waitdata, queue, room, at, opid)
                 lockAndWriteLog(room, ",".join([str(time()), user, "uadd", room, queue, waitdata]))
                 ret_ok(start_response, "success")
             elif will_del:
-                delquser(user, queue, room)
+                delquser(user, queue, room, at, opid)
                 lockAndWriteLog(room, ",".join([str(time()), user, "udel", room, queue]))
                 ret_ok(start_response, "success")
             elif staff_del:
                 # owner is removing someone from the queue
-                delquser(username, queue, room)
+                delquser(username, queue, room, at, opid)
                 lockAndWriteLog(room, ",".join([str(time()), user, "usdel", room, queue, username]))
                 ret_ok(start_response, "success")
             else:
+                # Nothing to do (already in / not in the queue), but it still fences older pending actions
+                subject = username if (is_owner and action == 'del' and username) else user
+                if action in ('add', 'del'):
+                    fence(room, subject + "|" + queue, at)
+                recordop(room, opid)
                 return ret_400(start_response, "Invalid action.")
+        except StaleAction:
+            recordop(room, opid)
+            return ret_ok(start_response, STALE_MSG)
+        except DuplicateAction:
+            return ret_ok(start_response, "success")
         except redis.RedisError as e: 
             return ret_500(start_response, "RedisError: " + str(e))
         except Exception as e:
@@ -374,44 +590,99 @@ def sseupdate(environ, start_response):
         sys.stderr.write("Room %s not found in database\n" % room)
         return ret_400(start_response, "Room not found in database.")
 
+    # This connection's peer id, if any
+    peerid = query.get('peerid', '')
+    if peerid and not re.match(PEERID_RGX, peerid):
+        peerid = ''
+    sse_user = environ.get('REMOTE_USER', '').lower()
+
     start_response('200 OK', [
         ('Content-Type', 'text/event-stream;charset=utf-8'),
         ('Cache-Control', 'no-cache;public'),
         ('Connection', 'keep-alive'),
     ])
 
-    yield ("data: %s\n\n" % json.dumps(getusers("", room))).encode()
     # this time, add a timeout so it doesn't hang forever
     rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip(), socket_timeout=30)
+
+    # Room state plus mesh presence and this peer's pending signals, read on their own connection
+    payload_rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())
+    def build_payload():
+        data = getusers("", room)
+        # Only peers that heartbeated in the last 90s (the key's TTL can't expire single members)
+        peers_raw = payload_rds.zrangebyscore("peers"+room, time() - 90, "+inf")
+        meta_raw = payload_rds.hgetall("peermeta"+room)
+        peers = []
+        for p in peers_raw:
+            pid = p.decode() if isinstance(p, bytes) else p
+            m = meta_raw.get(p) or meta_raw.get(pid.encode() if isinstance(pid, str) else pid)
+            if m:
+                meta = json.loads(m)
+                meta["peerid"] = pid
+                peers.append(meta)
+        data["peers"] = peers
+        signals = []
+        owner_rec = payload_rds.hget("peerkeys"+room, peerid) if peerid else None
+        # deliver a peer's signals only to the user who joined with it (checked each time: joining may finish after connecting)
+        if owner_rec and json.loads(owner_rec).get("user") == sse_user:
+            sig_raw = payload_rds.hget("signal"+room, peerid)
+            if sig_raw:
+                signals = json.loads(sig_raw)
+                payload_rds.hdel("signal"+room, peerid)
+        data["signals"] = signals
+        # Latest change time per user|queue, so clients can skip superseded pending actions
+        data["watermarks"] = {k.decode(): float(v) for k, v in payload_rds.hgetall("qwatermark"+room).items()}
+        data["servertime"] = time()
+        return data
+
+    yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
     start_time = time()
     LIMIT = 60
+    # A periodic keepalive comment lets us notice clients that have gone away
+    KEEPALIVE = 15
+    last_write = time()
     try:
         with rds.monitor() as m:
             for command in m.listen():
                 if 'wsgi.errors' in environ and environ['wsgi.errors'].closed:
-                    return ret_200(start_response, "data: %s\n\n" % json.dumps(getusers("", room)))
+                    return ret_200(start_response, "data: %s\n\n" % json.dumps(build_payload()))
                 cmd = command['command'].lower()
                 if (time() - start_time) > LIMIT:
-                    return ret_200(start_response, "data: %s\n\n" % json.dumps(getusers("", room)))
-                if "del room"+room.lower() in cmd or "set room"+room.lower() in cmd:
+                    return ret_200(start_response, "data: %s\n\n" % json.dumps(build_payload()))
+                is_room_change = "del room"+room.lower() in cmd or "set room"+room.lower() in cmd
+                # Match only HSET for signals: MONITOR also sees every read, including our own
+                is_peerjoin = "peerjoin"+room.lower() in cmd
+                is_my_signal = peerid and cmd.startswith("hset signal"+room.lower()) and (peerid.lower() in cmd)
+                if is_room_change or is_peerjoin or is_my_signal:
                     start_time = time()
+                    last_write = start_time
                     try:
-                        yield ("data: %s\n\n" % json.dumps(getusers("", room))).encode()
+                        yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
                         #sys.stderr.write("DEBUG sseupdate: " + str(environ['REMOTE_USER']) + "," + str(room) + "," + str(os.getpid()) + "\n")
+                    except GeneratorExit:
+                        # Client disconnected: close normally instead of killing the worker
+                        raise
                     except:
                         try:
                             sys.exit(0)
                         except:
                             os._exit(0)
+                elif time() - last_write > KEEPALIVE:
+                    last_write = time()
+                    yield b": keepalive\n\n"
+    except GeneratorExit:
+        raise
     except: # includes redis.TimeoutError
         try:
-            yield ("data: %s\n\n" % json.dumps(getusers("", room))).encode()
+            yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
+        except GeneratorExit:
+            raise
         except:
             try:
                 sys.exit(0)
             except:
                 os._exit(0)
-    yield ("data: %s\n\n" % json.dumps(getusers("", room))).encode()
+    yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
                 
 MIDDLEWARES = [ ]
 app = reduce(lambda h, m: m(h), MIDDLEWARES, application)

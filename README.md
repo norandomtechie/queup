@@ -45,6 +45,12 @@ Room owners, who are typically staff members or TAs, may also "mark" a student w
 
 Room owners may also lock/unlock the room via the Settings panel to ensure that attendees cannot stuff the queue before office hours have actually started.  By default when a room is created, it is unlocked.
 
+## Peer-to-peer mode
+
+In Fall 2026, plagued by server outages, QueUp was upgraded to allow rooms to operate in peer-to-peer mode. 
+
+Rooms should keep working when the server is down or slow. When you first log in, your browser will identify itself to other users' browsers in the same room connect to each other over [WebRTC](https://webrtc.org/), keep the queue going among themselves, and sync everything back when the server returns.  A badge next to the room name shows the current state.  See [P2P.md](./P2P.md) for how it works, what it needs on the server, and how to test it.
+
 ## Room Permanency
 
 By default, all rooms are temporary, which means that they will be removed after 24 hours of inactivity.  This is a necessary measure to ensure the system will not use an inordinate amount of disk space.  If you wish to make your room permanent so that you don't need to recreate it, possibly due to having a large number of room owners and/or customized queues, please contact Niraj (niraj@purdue.edu) for the room to be added to a permanent list.
@@ -80,6 +86,14 @@ The full log when downloaded will have coded values for the actions performed, w
 | `r1q` | Toggle single queue |
 | `rtimer` | Set exam timer |
 | `rbcast` | Sent broadcast message |
+| `ouadd` | Added self to queue while the server was unreachable (applied when it came back) |
+| `oudel` | Removed self from queue while the server was unreachable (applied when it came back) |
+| `ousdel` | Staff removed a user from a queue while the server was unreachable |
+| `oqmrk` | Staff marked (1) or unmarked (0) a user while the server was unreachable |
+| `oqclr` | Staff cleared a queue while the server was unreachable (only entries that existed at that moment) |
+| `orej` | Offline action not applied when the server came back (reason included, e.g. cooldown, superseded, not-owner) |
+
+Offline entries are timestamped with when they actually happened, not when they were synced, and also record which user's browser submitted them.
 
 Here is what it could look like:  
 

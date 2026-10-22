@@ -7,29 +7,46 @@ import redis
 from functools import reduce
 from urllib.parse import parse_qs
 
-# for local testing
+# Fallback only; application() resolves the real path per request
 private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 
-sys.path.append(os.environ['PWD'] + '/queup')
+# Import sibling modules relative to this script
+_admin_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(_admin_dir))
+# Drop cached lib modules so touching this file also reloads lib/
+for _name in [n for n in sys.modules if n in ("lib", "alib") or n.startswith(("lib.", "alib."))]:
+    del sys.modules[_name]
 from lib.lock import *
 from lib.methods import getowners, getsections, getrooms
 from lib.ratelimiter import *
 from lib.wsgidefs import *
+from lib.privatepath import resolve_private_path
+import lib.methods
+import lib.lock
 
-sys.path.append(os.environ['PWD'] + '/queup/admin')
+sys.path.append(_admin_dir)
 from alib.methods import *
+import alib.methods
 
 def application(environ, strp):
+    global private
+
+    # Use the private dir of the tree serving this request
+    private = resolve_private_path(environ)
+    lib.methods.set_private_path(private)
+    lib.lock.set_private_path(private)
+    alib.methods.set_private_path(private)
+
     # initialize some variables
     user = environ.get('REMOTE_USER', "")
     query = parse_qs(environ['QUERY_STRING'])
     query = {k: v[0] for k, v in query.items()}
-    
+
     # now check our variables
     accepted_keys = ['sseupdate', 'log', 'fulllog', 'section']
     querychecked = any([x in query for x in accepted_keys]) and 'room' in query
     room = query.get("room", "")
-    
+
     # don't run unless redis is up
     try:
         rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())

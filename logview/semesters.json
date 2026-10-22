@@ -1,0 +1,18 @@
+{
+ "generated": "2026-10-01T15:01:48",
+ "sources": [
+  "https://www.purdue.edu/registrar/calendars/academic/",
+  "https://www.purdue.edu/registrar/calendars/academic-archive/"
+ ],
+ "note": "Only terms that differ from the pattern in lvlib/analyze.py are listed; they override it. Re-generate with tools/scrape_calendar.py.",
+ "terms": {
+  "Fall 2020": {
+   "start": "2020-08-24",
+   "end": "2020-12-12"
+  },
+  "Spring 2021": {
+   "start": "2021-01-19",
+   "end": "2021-05-08"
+  }
+ }
+}

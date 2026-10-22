@@ -6,11 +6,17 @@ import json
 import redis
 from datetime import timedelta
 import uuid 
+import random
+from time import sleep
 
 import pwd
 import subprocess
 
 # path to private directory for logs and db files
+# NOTE: this import-time value is only a fallback (e.g. for tooling that
+# imports this module outside of a request). Every real request must call
+# set_private_path() below, via lib.privatepath.resolve_private_path(environ),
+# before using any function in this module -- see roomd.wsgi/admin.wsgi.
 try:
     private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 except:
@@ -18,6 +24,12 @@ except:
 
 # redis client object
 rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())
+
+def set_private_path(path):
+    """Point this module at the private dir and Redis of the tree serving this request."""
+    global private, rds
+    private = path
+    rds = redis.Redis(unix_socket_path=open(private + 'redis_socket').read().strip())
 
 """
 room format in redis:
@@ -46,6 +58,8 @@ QUEUE_RGX = r'^[a-zA-Z0-9\_]{3,15}$'
 USER_RGX = r'^[a-z0-9]{2,8}$'
 WAITDATA_RGX = r'^[a-zA-Z0-9 \,\_\'\(\)]{1,50}$'
 SUBTITLE_RGX = r'^[a-zA-Z0-9 \,\_\'\(\)\-]{1,130}$'
+# Peer ids are crypto.randomUUID() values
+PEERID_RGX = r'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$'
 # UP: MUST be in sync with client side!
 
 ####################################################################################################
@@ -189,7 +203,10 @@ def deleteroom(room):
     rds.delete("room"+room)
     # delete sections if they exist
     if os.path.exists(private + "sections/" + room + ".json"):
-        os.path.delete(private + "sections/" + room + ".json")
+        os.remove(private + "sections/" + room + ".json")
+    # peer-to-peer presence, signaling, offline-sync and cooldown keys
+    rds.delete("peers"+room, "peermeta"+room, "peerjoin"+room, "signal"+room)
+    rds.delete("peerkeys"+room, "offlineapplied"+room, "offlinestatus"+room, "qwatermark"+room, "lastadd"+room)
 
 def createqueue(queue, room):
     if not rds.exists("room"+room):
@@ -219,6 +236,8 @@ def renamequeue(oldqueue, newqueue, room):
     # rename the queue table
     rds_room["queues"][newqueue] = rds_room["queues"].pop(oldqueue)
     rds.set("room"+room, json.dumps(rds_room))
+    setqueuewatermark(oldqueue, room)
+    setqueuewatermark(newqueue, room)
     return True
 
 def deletequeue(queue, room):
@@ -233,6 +252,7 @@ def deletequeue(queue, room):
     if queue in rds_room["queues"]:
         del rds_room["queues"][queue]
         rds.set("room"+room, json.dumps(rds_room))
+        setqueuewatermark(queue, room)
 
 def setcooldown(cooldown, room):
     if not rds.exists("room"+room):
@@ -259,7 +279,51 @@ def getcooldown(room):
         cooldown = int(cooldown)
     return cooldown
 
-def addquser(user, waitdata, queue, room):
+class StaleAction(Exception):
+    """A newer change for this user/queue already happened (by intent time)."""
+
+class DuplicateAction(Exception):
+    """This operation id was already decided (online or via offline sync)."""
+
+OPID_TTL = 86400
+
+def _guard_intent(pipe, room, keys, at, opid):
+    """Reject a request older than the latest change to keys, or whose operation id was already decided."""
+    if opid and pipe.sismember("offlineapplied"+room, opid):
+        raise DuplicateAction()
+    if at is not None:
+        marks = [float(v) for v in pipe.hmget("qwatermark"+room, keys) if v is not None]
+        if marks and at < max(marks):
+            raise StaleAction()
+
+def fence(room, key, at):
+    """Record that the user's state for key was settled at `at` (only ever raises the mark)."""
+    if at is None:
+        return
+    wm_key = "qwatermark" + room
+    for _ in range(10):
+        with rds.pipeline() as pipe:
+            try:
+                pipe.watch(wm_key)
+                cur = pipe.hget(wm_key, key)
+                if cur is not None and float(cur) >= at:
+                    return
+                pipe.multi()
+                pipe.hset(wm_key, key, at)
+                pipe.execute()
+                return
+            except redis.WatchError:
+                continue
+
+def recordop(room, opid, pipe=None):
+    """Mark an operation id as decided so its mesh copy syncs as a duplicate."""
+    if not opid:
+        return
+    p = pipe if pipe is not None else rds
+    p.sadd("offlineapplied"+room, opid)
+    p.expire("offlineapplied"+room, OPID_TTL)
+
+def addquser(user, waitdata, queue, room, at=None, opid=None):
     if not rds.exists("room"+room):
         raise Exception("addquser: " + room + " does not exist.")
     if queue == "":
@@ -274,18 +338,23 @@ def addquser(user, waitdata, queue, room):
         raise Exception("addquser: Bad username: " + user)
     elif waitdata != '' and not re.match(WAITDATA_RGX, waitdata):
         raise Exception("addquser: Bad waitdata: " + waitdata)
-    # insert the user into the queue array
-    rds_room = json.loads(rds.get("room"+room))
-    if queue not in rds_room["queues"]:
-        raise Exception("addquser: Queue {0} does not exist.".format(queue))
-    # check if user is already in queue
-    if user in rds_room["queues"][queue]:
-        raise Exception("addquser: User {0} is already in queue {1} in room {2}".format(user, queue, room))
-    # add user to queue
-    rds_room["queues"][queue].append({"user": user, "waitdata": waitdata, "time": time(), "mark": 0})
-    rds.set("room"+room, json.dumps(rds_room))
+    now = time()
+    def mutate(rds_room, pipe):
+        if queue not in rds_room["queues"]:
+            raise Exception("addquser: Queue {0} does not exist.".format(queue))
+        _guard_intent(pipe, room, [user + "|" + queue, "*|" + queue], at, opid)
+        # entries are dicts, so compare against each entry's "user" field
+        if any(x["user"] == user for x in rds_room["queues"][queue]):
+            raise Exception("addquser: User {0} is already in queue {1} in room {2}".format(user, queue, room))
+        rds_room["queues"][queue].append({"user": user, "waitdata": waitdata, "time": now, "mark": 0})
+        def writes(p):
+            p.hset("qwatermark"+room, user + "|" + queue, now if at is None else at)
+            p.hset("lastadd"+room, user, now)
+            recordop(room, opid, p)
+        return True, writes
+    update_room_atomically(room, mutate, extra_watch=("qwatermark"+room, "offlineapplied"+room))
 
-def delquser(user, queue, room):
+def delquser(user, queue, room, at=None, opid=None):
     if not rds.exists("room"+room):
         raise Exception("delquser: " + room + " does not exist.")
     if queue == "":
@@ -298,13 +367,63 @@ def delquser(user, queue, room):
         raise Exception("delquser: Bad queue name: " + queue)
     elif not re.match(USER_RGX, user):
         raise Exception("delquser: Bad username: " + user)
-    # remove the user from the queue array
-    rds_room = json.loads(rds.get("room"+room))
-    if queue not in rds_room["queues"]:
-        raise Exception("delquser: Queue {0} does not exist.".format(queue))
-    # remove user from queue by checking against user (fails silently if user not in queue)
-    rds_room["queues"][queue] = [x for x in rds_room["queues"][queue] if x["user"] != user]
-    rds.set("room"+room, json.dumps(rds_room))
+    now = time()
+    def mutate(rds_room, pipe):
+        if queue not in rds_room["queues"]:
+            raise Exception("delquser: Queue {0} does not exist.".format(queue))
+        _guard_intent(pipe, room, [user + "|" + queue, "*|" + queue], at, opid)
+        # remove user from queue by checking against user (fails silently if user not in queue)
+        rds_room["queues"][queue] = [x for x in rds_room["queues"][queue] if x["user"] != user]
+        def writes(p):
+            p.hset("qwatermark"+room, user + "|" + queue, now if at is None else at)
+            recordop(room, opid, p)
+        return True, writes
+    update_room_atomically(room, mutate, extra_watch=("qwatermark"+room, "offlineapplied"+room))
+
+def clearqueue(queue, room, at=None, opid=None):
+    """Remove everyone who was in the queue when the clear was clicked."""
+    now = time()
+    cutoff = now if at is None else at
+    def mutate(rds_room, pipe):
+        if queue not in rds_room["queues"]:
+            raise Exception("clearqueue: Queue {0} does not exist.".format(queue))
+        _guard_intent(pipe, room, ["*|" + queue], at, opid)
+        rds_room["queues"][queue] = [x for x in rds_room["queues"][queue] if x["time"] > cutoff]
+        def writes(p):
+            p.hset("qwatermark"+room, "*|" + queue, cutoff)
+            recordop(room, opid, p)
+        return True, writes
+    update_room_atomically(room, mutate, extra_watch=("qwatermark"+room, "offlineapplied"+room))
+
+def update_room_atomically(room, mutate, extra_watch=()):
+    """Read-modify-write room<room> with WATCH/MULTI/EXEC, retrying on concurrent changes."""
+    key = "room" + room
+    for attempt in range(30):
+        if attempt:
+            # jittered backoff so simultaneous writers stop colliding in lockstep
+            sleep(random.uniform(0, 0.005 * min(attempt, 10)))
+        with rds.pipeline() as pipe:
+            try:
+                pipe.watch(key, *extra_watch)
+                raw = pipe.get(key)
+                if raw is None:
+                    raise Exception("update_room_atomically: " + room + " does not exist.")
+                rds_room = json.loads(raw)
+                changed, extra_writes = mutate(rds_room, pipe)
+                pipe.multi()
+                if changed:
+                    pipe.set(key, json.dumps(rds_room))
+                if extra_writes:
+                    extra_writes(pipe)
+                pipe.execute()
+                return rds_room
+            except redis.WatchError:
+                continue
+    raise Exception("update_room_atomically: gave up after repeated concurrent modification of " + room)
+
+def setqueuewatermark(queue, room):
+    """Mark a queue-wide change now, so older offline actions count as superseded."""
+    rds.hset("qwatermark"+room, "*|" + queue, time())
 
 def getqueues(room):
     if not rds.exists("room"+room):
@@ -313,15 +432,9 @@ def getqueues(room):
     return list(rds_room["queues"].keys())
 
 def getlastadd(room, username):
-    if not rds.exists(private + "room.log"):
-        return 0    # no one could have added themselves to this queue at UNIX epoch!
-    last_add_time = 0
-    rds_room = json.loads(rds.get("room"+room))
-    for queue in rds_room["queues"]:
-        for user in rds_room["queues"][queue]:
-            if user["user"] == username and user["time"] > last_add_time:
-                last_add_time = user["time"]
-    return last_add_time
+    # Last self-add time (even if they've left since), which cooldown is measured from
+    last = rds.hget("lastadd"+room, username)
+    return float(last) if last else 0
 
 def resolveuser(username):
     # check if redis already has "user:username" and use that
@@ -414,7 +527,7 @@ def getsectionforuser(user, room):
     else:
         return ""
 
-def togglemark(user, queue, room):
+def togglemark(user, queue, room, at=None, opid=None):
     if not rds.exists("room"+room):
         raise Exception("togglemark: " + room + " does not exist.")
     if queue == "":
@@ -427,17 +540,24 @@ def togglemark(user, queue, room):
         raise Exception("togglemark: Bad queue name: " + queue)
     elif not re.match(USER_RGX, user):
         raise Exception("togglemark: Bad username: " + user)
-    rds_room = json.loads(rds.get("room"+room))
-    if queue not in rds_room["queues"]:
-        raise Exception("togglemark: Queue {0} does not exist in room {1}".format(queue, room))
-    marked = [x["mark"] for x in rds_room["queues"][queue] if x["user"] == user]
-    if len(marked) == 0:
-        raise Exception("togglemark: User {0} not in queue {1} in room {2}".format(user, queue, room))
-    marked = marked[0]
-    element = [x for x in rds_room["queues"][queue] if x["user"] == user][0]
-    idx = rds_room["queues"][queue].index(element)
-    rds_room["queues"][queue][idx]["mark"] = 1 - marked
-    rds.set("room"+room, json.dumps(rds_room))
+    now = time()
+    def mutate(rds_room, pipe):
+        if queue not in rds_room["queues"]:
+            raise Exception("togglemark: Queue {0} does not exist in room {1}".format(queue, room))
+        element = next((x for x in rds_room["queues"][queue] if x["user"] == user), None)
+        if element is None:
+            raise Exception("togglemark: User {0} not in queue {1} in room {2}".format(user, queue, room))
+        member = user + "|" + queue
+        _guard_intent(pipe, room, [member, "*|" + queue, "m:" + member], at, opid)
+        if at is not None and element["time"] > at:
+            raise StaleAction()   # this entry is newer than the click that meant to mark it
+        element["mark"] = 1 - element["mark"]
+        def writes(p):
+            # newer than any offline mark made before this (see lib/offlinesync.py)
+            p.hset("qwatermark"+room, "m:" + member, now if at is None else at)
+            recordop(room, opid, p)
+        return True, writes
+    update_room_atomically(room, mutate, extra_watch=("qwatermark"+room, "offlineapplied"+room))
     return True
 
 def setroompermanency(perm, room):

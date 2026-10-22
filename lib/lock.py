@@ -3,10 +3,17 @@ import os, sys
 import shutil
 
 # grab config based on IP and init all variables
+# NOTE: this import-time value is only a fallback -- see set_private_path()
+# below and lib/privatepath.py.
 try:
     private = '/web/groups/' + os.environ['USER'] + '/private/queup/'
 except:
     private = os.environ['CONTEXT_DOCUMENT_ROOT'].replace('public_html', 'private') + 'queup/'
+
+def set_private_path(path):
+    """Point this module at the private dir of the tree serving this request."""
+    global private
+    private = path
 
 def acquireLock(path):
     t = 0

@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QueUp Logview</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10); --wash:rgba(11,11,11,.05);
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --off:#c3c2b7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --wash:rgba(255,255,255,.06);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --off:#383835;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --wash:rgba(255,255,255,.06);
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --off:#383835;
+}
+* { box-sizing: border-box; }
+html, body { margin:0; background:var(--bg); color:var(--ink);
+  font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body { padding:0 16px 60px; }
+main { max-width:1180px; margin:0 auto; }
+a { color:var(--s1); }
+h1 { font-size:22px; font-weight:600; margin:0; }
+h2 { font-size:16px; font-weight:600; margin:0 0 4px; }
+.sub { color:var(--ink2); font-size:13px; margin:0 0 12px; }
+header.top { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; justify-content:space-between; padding:18px 0 8px; }
+.controls { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; }
+label.ctl { display:flex; gap:6px; align-items:center; color:var(--ink2); font-size:13px; }
+select, input[type=text], input[type=number], button {
+  font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border);
+  border-radius:6px; padding:5px 8px; }
+button { cursor:pointer; }
+button:hover { background:var(--wash); }
+button.on, .chip.on { background:var(--wash); border-color:var(--ink2); }
+.chip { cursor:pointer; user-select:none; border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:13px; background:var(--surface); }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px; margin:14px 0; }
+.grid { display:grid; gap:12px; }
+.g-kpi { grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); }
+.g-sup { grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); }
+.g-2 { grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+.tile { background:var(--bg); border-radius:8px; padding:10px 12px; min-width:0; }
+.tile .k { color:var(--ink2); font-size:12px; }
+.tile .v { font-size:24px; font-weight:600; line-height:1.2; margin-top:2px; }
+.tile .d { color:var(--ink2); font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+.row { display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; margin:6px 0 10px; }
+.legend { display:flex; flex-wrap:wrap; gap:4px 14px; margin:8px 0 0; font-size:13px; color:var(--ink2); }
+.legend i { display:inline-block; width:12px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+.chip .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; }
+.legend .chip { color:var(--ink); } .legend .chip:not(.on) { opacity:.5; text-decoration:line-through; }
+.legend i.sq { height:10px; width:10px; border-radius:2px; }
+.chart { position:relative; width:100%; }
+.chart svg { display:block; width:100%; overflow:visible; }
+.chart text { fill:var(--muted); font-size:11px; }
+.chart .ytitle { fill:var(--ink2); }
+#tip { position:fixed; pointer-events:none; z-index:9; background:var(--surface); color:var(--ink);
+  border:1px solid var(--axis); border-radius:6px; padding:6px 9px; font-size:12px; display:none; max-width:300px;
+  box-shadow:0 2px 10px rgba(0,0,0,.18); }
+#tip b { font-weight:600; }
+#tip .sw { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; }
+.tablewrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-size:13px; }
+th, td { text-align:right; padding:5px 9px; border-bottom:1px solid var(--grid); white-space:nowrap; }
+th:first-child, td:first-child { text-align:left; }
+th { color:var(--ink2); font-weight:600; position:sticky; top:0; background:var(--surface); }
+th.sortable { cursor:pointer; }
+td.l, th.l { text-align:left; }
+td.sub { max-width:240px; overflow:hidden; text-overflow:ellipsis; }
+tr.thin td { color:var(--muted); }
+tr.total td { font-weight:600; }
+.stack { display:flex; gap:2px; height:22px; margin:8px 0 6px; }
+.stack div { min-width:2px; border-radius:3px; }
+.muted { color:var(--muted); }
+.note { color:var(--ink2); font-size:12px; margin-top:6px; }
+.err { background:var(--surface); border:1px solid var(--s8); border-radius:8px; padding:12px; margin:16px 0; }
+.names-hidden .pii { filter:blur(5px); }
+.heatcell { cursor:default; }
+.skeleton { color:var(--muted); padding:30px 0; text-align:center; }
+@media (max-width:560px) { .tile .v { font-size:20px; } body { padding:0 10px 40px; } }
+</style>
+</head>
+<body>
+<main>
+<header class="top">
+  <div>
+    <h1 id="title">QueUp Logview</h1>
+    <div class="sub" id="subtitle"></div>
+  </div>
+  <div class="controls">
+    <label class="ctl" title="Queue entries open longer than this are treated as forgotten and left out of all statistics">
+      Stale cap <select id="cap"></select></label>
+    <label class="ctl"><input type="checkbox" id="hide"> Hide usernames</label>
+    <button id="theme" title="Cycle theme: auto / light / dark">Theme: auto</button>
+  </div>
+</header>
+<div id="app"><div class="skeleton">Loading…</div></div>
+</main>
+<div id="tip"></div>
+
+<script>
+/*LV_CONFIG*/
+</script>
+<script>
+"use strict";
+if (!window.LV) window.LV = {user: "?", admin: false, room: "", cap: 4, defaultCap: 4};
+const NS = "http://www.w3.org/2000/svg";
+const $ = (s, el) => (el || document).querySelector(s);
+const SER = i => "var(--s" + (i + 1) + ")";
+const TERMS = ["Spring", "Summer", "Fall"];
+
+// ---------- helpers -------------------------------------------------------------
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const k in (attrs || {})) {
+    if (k === "class") e.className = attrs[k];
+    else if (k === "on") for (const ev in attrs.on) e.addEventListener(ev, attrs.on[ev]);
+    else if (k === "style") e.style.cssText = attrs[k];
+    else if (attrs[k] !== false && attrs[k] != null) e.setAttribute(k, attrs[k]);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c));
+  return e;
+}
+function svg(name, attrs, parent) {
+  const e = document.createElementNS(NS, name);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+function dur(s) {
+  if (s == null || isNaN(s)) return "–";
+  if (s < 1) return s.toFixed(2) + "s";
+  let t = Math.round(s);
+  if (t < 60) return t + "s";
+  if (t < 3600) return Math.floor(t / 60) + "m " + String(t % 60).padStart(2, "0") + "s";
+  const hh = Math.floor(t / 3600), mm = Math.round((t % 3600) / 60);
+  return mm === 60 ? (hh + 1) + "h 00m" : hh + "h " + String(mm).padStart(2, "0") + "m";
+}
+function durShort(s) {
+  if (s === 0) return "0";
+  if (s < 60) return +s.toFixed(1) + "s";
+  if (s < 3600) return +(s / 60).toFixed(1) + "m";
+  return +(s / 3600).toFixed(1) + "h";
+}
+const num = n => n == null ? "–" : Math.round(n).toLocaleString();
+const pct = (a, b) => b ? (100 * a / b).toFixed(1) + "%" : "–";
+const sv = (st, k) => st ? st[k] : null;
+function fmtDate(ts) {
+  if (ts == null) return "–";
+  return new Date(ts * 1000).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "America/Indiana/Indianapolis"});
+}
+function fmtIso(iso) { return dayLabel(dayNum(iso)); }
+function dayNum(iso) { const [y, m, d] = iso.split("-").map(Number); return Date.UTC(y, m - 1, d) / 864e5; }
+function dayLabel(n) { return new Date(n * 864e5).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"}); }
+function niceTicks(max, n) {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / (n || 5), p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  const step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p, t = [];
+  for (let v = 0; v <= max + step * 0.999; v += step) t.push(+v.toFixed(10));
+  return t;
+}
+const DSTEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200, 86400, 172800];
+function durTicks(max, n) {
+  if (!(max > 0)) return [0, 1];
+  const raw = max / (n || 5);
+  const step = DSTEPS.find(x => x >= raw) || DSTEPS[DSTEPS.length - 1], t = [];
+  for (let v = 0; v <= max + step * 0.999; v += step) t.push(v);
+  return t;
+}
+
+// ---------- tooltip + redraw registry ----------------------------------------------
+const tip = $("#tip");
+function showTip(html, ev) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const w = tip.offsetWidth, hgt = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 6) x = ev.clientX - w - 14;
+  if (y + hgt > innerHeight - 6) y = ev.clientY - hgt - 14;
+  tip.style.left = Math.max(4, x) + "px"; tip.style.top = Math.max(4, y) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+// chart redraw callbacks: RS = scope-dependent charts, RU = the rest; reg() adds to `target`
+let RS = [], RU = [], target = RU;
+const redrawAll = () => RS.concat(RU).forEach(f => f());
+function reg(fn) { target.push(fn); fn(); }
+const regS = fn => { RS.push(fn); fn(); };
+const regU = fn => { RU.push(fn); fn(); };
+let rzTimer;
+addEventListener("resize", () => { clearTimeout(rzTimer); rzTimer = setTimeout(redrawAll, 120); });
+
+// ---------- charts --------------------------------------------------------------
+/* o: {series:[{name,color,pts:[{x,y}|{x,y:null}]}], kind:'line'|'bar', xFmt, yFmt, yTicks, xTicks, height, xTitle, yTitle, tipX} */
+function xyChart(host, o) {
+  host.innerHTML = "";
+  const W = Math.max(300, host.clientWidth || 600), H = o.height || 270;
+  const m = {l: 54, r: 14, t: 10, b: o.xTitle ? 44 : 30}, iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const all = o.series.flatMap(s => s.pts.filter(p => p.y != null));
+  if (!all.length) { host.append(h("div", {class: "skeleton"}, "No data for this selection.")); return; }
+  let xmin = Math.min(...all.map(p => p.x)), xmax = Math.max(...all.map(p => p.x));
+  if (o.xDomain) [xmin, xmax] = o.xDomain;
+  if (xmax === xmin) { xmin -= 1; xmax += 1; }
+  if (o.kind === "bar") { const pad = (xmax - xmin) / o.series[0].pts.length / 2 + 0; xmin -= pad || .5; xmax += pad || .5; }
+  const ymax0 = Math.max(...all.map(p => p.y));
+  const yt = (o.dur ? durTicks : niceTicks)(ymax0 * 1.02, 5), ymax = yt[yt.length - 1];
+  const X = x => m.l + (x - xmin) / (xmax - xmin) * iw, Y = y => m.t + ih - y / ymax * ih;
+  const root = svg("svg", {viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": o.title || "chart"}, host);
+  yt.forEach(v => {
+    svg("line", {x1: m.l, x2: m.l + iw, y1: Y(v), y2: Y(v), stroke: "var(--grid)", "stroke-width": 1}, root);
+    svg("text", {x: m.l - 7, y: Y(v) + 4, "text-anchor": "end"}, root).textContent = (o.yFmt || (o.dur ? durShort : num))(v);
+  });
+  svg("line", {x1: m.l, x2: m.l + iw, y1: Y(0), y2: Y(0), stroke: "var(--axis)", "stroke-width": 1}, root);
+  const xt = o.xTicks || (() => { const k = Math.min(8, Math.floor(iw / 80)), t = []; for (let i = 0; i <= k; i++) t.push(Math.round(xmin + (xmax - xmin) * i / k)); return t; })();
+  xt.forEach(v => svg("text", {x: X(v), y: H - m.b + 15, "text-anchor": "middle"}, root).textContent = (o.xFmt || String)(v));
+  if (o.xTitle) svg("text", {x: m.l + iw / 2, y: H - 4, "text-anchor": "middle", class: "ytitle"}, root).textContent = o.xTitle;
+  o.series.forEach(s => {
+    if (o.kind === "bar") {
+      const bw = Math.max(1, Math.min(o.barMax || 28, iw / (xmax - xmin) * (o.barW || 0.8)));
+      s.pts.forEach(p => { if (p.y == null) return;
+        const y = Y(p.y), ht = Math.max(0, Y(0) - y);
+        svg("rect", {x: X(p.x) - bw / 2, y: y, width: bw, height: ht, fill: s.color, rx: bw > 6 ? 3 : 0}, root);
+        if (o.barLabel) { // label inside the bar when it is big enough, otherwise just above it
+          const inside = ht >= 20 && bw >= (o.narrow ? 22 : 30);
+          svg("text", {x: X(p.x), y: inside ? y + 14 : y - 5, "text-anchor": "middle",
+            style: inside ? "fill:#fff;font-size:11px;font-weight:600" : "fill:var(--ink2);font-size:11px"}, root).textContent = o.barLabel(p, o.narrow);
+        }
+      });
+      return;
+    }
+    let d = "", pen = false;
+    s.pts.forEach(p => { if (p.y == null) { pen = false; return; } d += (pen ? "L" : "M") + X(p.x).toFixed(1) + " " + Y(p.y).toFixed(1); pen = true; });
+    svg("path", {d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round"}, root);
+    if (s.pts.length <= 40) s.pts.forEach(p => { if (p.y != null) svg("circle", {cx: X(p.x), cy: Y(p.y), r: 3.5, fill: s.color, stroke: "var(--surface)", "stroke-width": 2}, root); });
+  });
+  // hover layer
+  const xs = [...new Set(all.map(p => p.x))].sort((a, b) => a - b);
+  const cross = svg("line", {y1: m.t, y2: m.t + ih, stroke: "var(--ink2)", "stroke-width": 1, "stroke-dasharray": "3 3", visibility: "hidden"}, root);
+  const hit = svg("rect", {x: m.l, y: m.t, width: iw, height: ih, fill: "transparent"}, root);
+  hit.addEventListener("mousemove", ev => {
+    const r = root.getBoundingClientRect(), px = (ev.clientX - r.left) * (W / r.width);
+    const xv = xmin + (px - m.l) / iw * (xmax - xmin);
+    let best = xs[0]; for (const x of xs) if (Math.abs(x - xv) < Math.abs(best - xv)) best = x;
+    cross.setAttribute("x1", X(best)); cross.setAttribute("x2", X(best)); cross.setAttribute("visibility", "visible");
+    const rows = o.series.map(s => { const p = s.pts.find(q => q.x === best); return p && p.y != null ?
+      `<div><span class="sw" style="background:${s.color}"></span>${esc(s.name)}: <b>${esc((o.tipY || o.yFmt || (o.dur ? dur : num))(p.y, p))}</b></div>` : ""; }).join("");
+    showTip(`<div><b>${esc((o.tipX || o.xFmt || String)(best))}</b></div>${rows}`, ev);
+  });
+  hit.addEventListener("mouseleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+}
+
+function legend(items) {
+  return h("div", {class: "legend"}, items.map(i => h("span", {}, h("i", {style: "background:" + i.color}), i.name)));
+}
+
+// sequential ramp (blue), one stop list per mode
+const RAMP_L = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"];
+const RAMP_D = ["#0d366b", "#184f95", "#2a78d6", "#6da7ec", "#b7d3f6"];
+function hex(c) { return [1, 3, 5].map(i => parseInt(c.substr(i, 2), 16)); }
+function ramp(t) {
+  const dark = (document.documentElement.dataset.theme === "dark") ||
+    (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  const R = dark ? RAMP_D : RAMP_L, x = Math.max(0, Math.min(1, t)) * (R.length - 1), i = Math.min(R.length - 2, Math.floor(x)), f = x - i;
+  const a = hex(R[i]), b = hex(R[i + 1]);
+  return "rgb(" + a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(",") + ")";
+}
+function inkOn(t) { // readable cell text for a ramp position
+  const dark = (document.documentElement.dataset.theme === "dark") || (!document.documentElement.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  return dark ? (t > .6 ? "#0b0b0b" : "#fff") : (t > .45 ? "#fff" : "#0b0b0b");
+}
+
+const DOWS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const hr12 = h24 => (h24 % 12 || 12) + (h24 < 12 ? "a" : "p");
+function heatmap(host, grid, o) { // grid[7][24] of numbers|null
+  host.innerHTML = "";
+  const W = Math.max(320, host.clientWidth || 700), m = {l: 36, t: 18, r: 4}, cw = (W - m.l - m.r) / 24, ch = Math.min(30, Math.max(22, cw * .8));
+  const H = m.t + 7 * ch + 4, root = svg("svg", {viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": o.title}, host);
+  const vals = grid.flat().filter(v => v != null), max = Math.max(...vals, 0) || 1;
+  for (let c = 0; c < 24; c += (cw < 22 ? 2 : 1)) svg("text", {x: m.l + c * cw + cw / 2, y: 12, "text-anchor": "middle"}, root).textContent = hr12(c);
+  grid.forEach((row, r) => {
+    svg("text", {x: m.l - 6, y: m.t + r * ch + ch / 2 + 4, "text-anchor": "end"}, root).textContent = DOWS[r];
+    row.forEach((v, c) => {
+      const t = v == null ? 0 : v / max;
+      const rc = svg("rect", {x: m.l + c * cw + 1, y: m.t + r * ch + 1, width: cw - 2, height: ch - 2, rx: 3, fill: v == null ? "var(--wash)" : ramp(t), class: "heatcell"}, root);
+      if (cw >= 26 && v != null && v > 0) svg("text", {x: m.l + c * cw + cw / 2, y: m.t + r * ch + ch / 2 + 4, "text-anchor": "middle", style: `fill:${inkOn(t)};font-size:10px`}, root).textContent = o.cell(v);
+      rc.addEventListener("mousemove", ev => showTip(`<b>${DOWS[r]} ${hr12(c)}–${hr12((c + 1) % 24)}</b><div>${esc(o.tipLabel)}: <b>${esc(o.tip(v, r, c))}</b></div>`, ev));
+      rc.addEventListener("mouseleave", hideTip);
+    });
+  });
+}
+
+// ---------- tables ----------------------------------------------------------------
+/* cols: [{h, f(row)->text|node, cls, pii}] */
+function table(cols, rows, o) {
+  o = o || {};
+  const t = h("table", {}, h("thead", {}, h("tr", {}, cols.map(c => h("th", {class: c.cls || ""}, c.h)))),
+    h("tbody", {}, rows.map(r => h("tr", {class: (o.rowCls && o.rowCls(r)) || ""},
+      cols.map(c => h("td", {class: (c.cls || "") + (c.pii ? " pii" : "")}, c.f(r)))))));
+  return h("div", {class: "tablewrap"}, t);
+}
+const statCols = (get) => [
+  {h: "Served", f: r => num(sv(get(r), "n"))},
+  {h: "Min", f: r => dur(sv(get(r), "min"))},
+  {h: "Avg", f: r => dur(sv(get(r), "mean"))},
+  {h: "Std dev", f: r => dur(sv(get(r), "sd"))},
+  {h: "Median", f: r => dur(sv(get(r), "median"))},
+  {h: "p90", f: r => dur(sv(get(r), "p90"))},
+  {h: "Max", f: r => dur(sv(get(r), "max"))},
+];
+
+// ---------- data ------------------------------------------------------------------
+let CAP = LV.cap;
+async function api(params) {
+  const q = new URLSearchParams(Object.assign({cap: CAP}, params));
+  const r = await fetch("?" + q.toString(), {credentials: "same-origin"});
+  let j; try { j = await r.json(); } catch (e) { throw new Error("Server returned an unreadable response (" + r.status + ")."); }
+  if (!r.ok || (j && j.error)) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+function showError(e) { $("#app").replaceChildren(h("div", {class: "err"}, "Could not load data: " + e.message)); }
+
+// ---------- single-room view ---------------------------------------------------------
+let D = null, scope = "all";
+const scopeObj = () => scope === "all" ? D.all : D.semesters.find(s => s.key === scope);
+const scopeName = () => scope === "all" ? "all time" : scope;
+
+async function openRoom(room) {
+  $("#app").replaceChildren(h("div", {class: "skeleton"}, "Analyzing " + room + "… (first load of a big room can take a few seconds)"));
+  try { D = await api({api: "room", room}); } catch (e) { return showError(e); }
+  scope = "all";
+  $("#title").textContent = "Room " + D.room;
+  $("#subtitle").textContent = (D.subtitle ? D.subtitle + " · " : "") + fmtDate(D.first) + " – " + fmtDate(D.last) + " · times in " + D.tz;
+  renderRoom();
+}
+
+function renderRoom() {
+  RS = []; RU = [];
+  const app = $("#app"); app.replaceChildren();
+  const top = h("div", {class: "row"});
+  top.append(h("a", {href: "?"}, "← All rooms"));
+  const sel = h("select", {id: "scope"}, h("option", {value: "all"}, "All time"),
+    D.semesters.slice().reverse().map(s => h("option", {value: s.key}, s.key + " (" + num(s.joins) + " joins)")));
+  sel.value = scope;
+  sel.addEventListener("change", () => { scope = sel.value; renderScoped(); });
+  top.append(h("label", {class: "ctl"}, "Scope for the sections below: ", sel));
+  app.append(top, h("div", {id: "scoped"}), h("div", {id: "unscoped"}));
+  renderScoped(); renderUnscoped();
+}
+
+const tag = f => { f.__h = 1; return f; };
+function card(title, sub, ...kids) {
+  return h("section", {class: "card"}, h("h2", {}, title), sub ? h("p", {class: "sub"}, sub) : null, ...kids);
+}
+
+function renderScoped() {
+  const S = scopeObj(), st = S.stats, box = $("#scoped");
+  box.replaceChildren(); RS = []; target = RS;
+  const tile = (k, v, d) => h("div", {class: "tile"}, h("div", {class: "k"}, k), h("div", {class: "v"}, v), d ? h("div", {class: "d"}, d) : null);
+  // KPIs
+  const o = S.outcomes, served = (st ? st.n : 0);
+  box.append(card("Overview – " + scopeName(),
+    "Time-to-service = time from adding yourself to a queue until you are marked, removed by staff, or remove yourself.",
+    h("div", {class: "grid g-kpi"},
+      tile("Joins", num(S.joins)),
+      tile("Sessions measured", num(served), pct(served, S.joins) + " of joins"),
+      tile("Avg time-to-service", dur(sv(st, "mean"))),
+      tile("Median", dur(sv(st, "median"))),
+      tile("90th percentile", dur(sv(st, "p90"))),
+      tile("Std deviation", dur(sv(st, "sd"))),
+      tile("Unique students", num(S.students)),
+      tile("Active days", num(S.days)),
+      tile("Room visits", num(S.visits), num(S.visitors) + " distinct users"))));
+  // superlatives
+  box.append(card("Superlatives – " + scopeName(), null,
+    h("div", {class: "grid g-sup"}, S.superlatives.map(s =>
+      h("div", {class: "tile"}, h("div", {class: "k"}, s.label),
+        h("div", {class: "v"}, s.kind === "dur" ? dur(s.value) : num(s.value)),
+        h("div", {class: "d pii"}, s.detail)))),
+    h("p", {class: "note"}, "Entries open longer than " + D.cap_hours + " h are excluded as stale (" + num(o.stale) + " here); change the stale cap at the top right.")));
+  // outcomes + histogram
+  const counted = [["Marked", o.mark, 0], ["Removed by staff", o.staff, 1], ["Left on their own", o.self, 2]];
+  const other = o.cleared + o.qdel + o.stale + o.unresolved, tot = counted.reduce((a, c) => a + c[1], 0) + other || 1;
+  const seg = (n, style, title) => h("div", {style: "display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;overflow:hidden;" + style, title},
+    n / tot >= 0.06 ? (100 * n / tot).toFixed(n / tot >= 0.1 ? 0 : 1) + "%" : "");
+  const stack = h("div", {class: "stack", style: "height:26px"}, counted.map(c => seg(c[1], `flex:${c[1]};background:${SER(c[2])}`, c[0] + ": " + num(c[1]))),
+    seg(other, `flex:${other};background:var(--off);color:var(--ink)`, "Not counted: " + num(other)));
+  const hist = h("div", {class: "chart", id: "hist"});
+  const labels = ["<30s", "30s–1m", "1–2m", "2–5m", "5–10m", "10–20m", "20–30m", "30–60m", "1–2h", ">2h"];
+  box.append(h("div", {class: "grid g-2"},
+    card("How entries ended", "Every join, by outcome", stack,
+      legend(counted.map(c => ({name: c[0] + " · " + num(c[1]) + " (" + pct(c[1], tot) + ")", color: SER(c[2])})).concat(
+        [{name: "Not counted · " + num(other) + " (cleared " + num(o.cleared) + ", stale " + num(o.stale) + ", still waiting " + num(o.unresolved) + ", queue deleted " + num(o.qdel) + ")", color: "var(--off)"}])),
+      table([{h: "Outcome", f: r => r[0]}].concat(statCols(r => r[1]).slice(0, 1), statCols(r => r[1]).slice(2)),
+        [["Marked", S.stats_by_outcome.mark], ["Removed by staff", S.stats_by_outcome.staff], ["Left on their own", S.stats_by_outcome.self]])),
+    card("Time-to-service distribution", "Number of sessions per wait-time bucket", hist)));
+  const hTot = S.hist.reduce((x, y) => x + y, 0) || 1;
+  const hPct = (v, narrow) => { const p = 100 * v / hTot; return v === 0 ? "0%" : p < 0.1 ? "<0.1%" : (narrow || p >= 10 ? Math.round(p) : p.toFixed(1)) + "%"; };
+  regS(() => xyChart(hist, {series: [{name: "Sessions", color: "var(--s1)", pts: S.hist.map((v, i) => ({x: i, y: v}))}], kind: "bar", barW: .86, barMax: 90,
+    barLabel: (p, narrow) => hPct(p.y, narrow), narrow: (hist.clientWidth || 600) / S.hist.length < 46, tipY: v => num(v) + " (" + hPct(v) + ")",
+    xTicks: S.hist.map((_, i) => i), xFmt: i => labels[i], yFmt: num, height: 240, title: "Distribution", xDomain: [-.6, S.hist.length - .4]}));
+
+  // heatmap
+  const hm = h("div", {class: "chart"}), hmT = h("div", {style: "display:none"});
+  let mode = "joins";
+  const bj = h("button", {class: "on"}, "Joins"), bw = h("button", {}, "Avg time-to-service"), bt = h("button", {}, "Table view");
+  const draw = () => {
+    const H = S.heat;
+    RS = RS.filter(f => !f.__h);
+    if (mode === "joins") regS(tag(() => heatmap(hm, H.joins, {title: "Joins by weekday and hour", cell: v => v >= 1000 ? Math.round(v / 100) / 10 + "k" : v, tipLabel: "Joins", tip: v => num(v)})));
+    else {
+      const g = H.sum.map((row, r) => row.map((s, c) => H.n[r][c] >= 5 ? s / H.n[r][c] : null));
+      regS(tag(() => heatmap(hm, g, {title: "Avg time-to-service", cell: v => durShort(v), tipLabel: "Avg time-to-service (5+ sessions)", tip: (v, r, c) => v == null ? "not enough data" : dur(v) + " over " + num(H.n[r][c]) + " sessions"})));
+    }
+    hmT.replaceChildren(table([{h: "Hour"}].map(c => ({h: c.h, f: r => hr12(r)})).concat(DOWS.map((d, i) => ({h: d, f: r => mode === "joins" ? num(H.joins[i][r]) : (H.n[i][r] >= 5 ? dur(H.sum[i][r] / H.n[i][r]) : "–")}))), [...Array(24).keys()]));
+  };
+  bj.onclick = () => { mode = "joins"; bj.className = "on"; bw.className = ""; draw(); };
+  bw.onclick = () => { mode = "wait"; bw.className = "on"; bj.className = ""; draw(); };
+  bt.onclick = () => { const on = hmT.style.display === "none"; hmT.style.display = on ? "" : "none"; hm.style.display = on ? "none" : ""; bt.className = on ? "on" : ""; };
+  box.append(card("Busiest times – hour × weekday", "Sum over every week in " + scopeName() + ".", h("div", {class: "row"}, bj, bw, bt), hm, hmT,
+    h("p", {class: "note"}, "Darker = more. Cells for average wait need 5+ sessions. Hover for details.")));
+  draw();
+
+  // week table
+  const wk = S.weeks;
+  box.append(card("Week by week – " + scopeName(),
+    scope === "all" ? "Week N pooled across every semester. Week 1 is the Mon–Sun week in which classes begin (Purdue academic calendar); week 0 is the week before." :
+      "Semester runs " + fmtIso(S.start) + " – " + fmtIso(S.end) + " (classes begin to end of finals). Week 1 is the Mon–Sun week of " + fmtIso(S.start) + "; week 0 is the week before. Greyed rows have fewer than 10 sessions.",
+    table([{h: "Week", f: r => "Week " + r.week}, {h: "Joins", f: r => num(r.joins)}].concat(statCols(r => r.n ? r : null)), wk,
+      {rowCls: r => r.n < 10 ? "thin" : ""})));
+
+  // queues
+  box.append(card("By queue – " + scopeName(), null,
+    table([{h: "Queue", f: r => r.queue, cls: "l pii"}, {h: "Joins", f: r => num(r.joins)}].concat(statCols(r => r.stats)), S.queues)));
+
+  // leaderboards
+  box.append(h("div", {class: "grid g-2"},
+    card("Most frequent students", "Top 25 by joins – " + scopeName(),
+      table([{h: "User", f: r => r.user, cls: "l", pii: true}, {h: "Joins", f: r => num(r.joins)}, {h: "Avg", f: r => dur(sv(r.stats, "mean"))}, {h: "Max", f: r => dur(sv(r.stats, "max"))}], S.top_students)),
+    card("Most active staff", "Top 25 by students handled (marks + staff removals) – " + scopeName(),
+      table([{h: "User", f: r => r.user, cls: "l", pii: true}, {h: "Handled", f: r => num(r.handled)}, {h: "Marks", f: r => num(r.marks)}, {h: "Removals", f: r => num(r.removals)}, {h: "Avg", f: r => dur(sv(r.stats, "mean"))}], S.top_staff))));
+  // timeline
+  const dj = h("div", {class: "chart"}), dw = h("div", {class: "chart"});
+  const inScope = d => scope === "all" || (d[0] >= S.from && d[0] <= S.to); // ISO dates compare as strings
+  const days = D.daily.filter(inScope);
+  box.append(card("Day by day – " + scopeName(), "Joins per day, and the average time-to-service for days with 5+ sessions", dj, h("div", {style: "height:12px"}), dw));
+  const dx = days.length ? [dayNum(days[0][0]), dayNum(days[days.length - 1][0])] : null;
+  regS(() => xyChart(dj, {series: [{name: "Joins", color: "var(--s1)", pts: days.map(d => ({x: dayNum(d[0]), y: d[2]}))}], kind: "bar", xFmt: dayLabel, height: 220, title: "Joins per day", xDomain: dx, barW: 1}));
+  regS(() => xyChart(dw, {series: [{name: "Avg time-to-service", color: "var(--s2)", pts: days.map(d => ({x: dayNum(d[0]), y: d[3] >= 5 ? d[4] / d[3] : null}))}], dur: true, xFmt: dayLabel, height: 220, title: "Average time-to-service per day", xDomain: dx}));
+}
+
+// semester-independent sections: superimposed weekly chart, semester table, timeline
+function renderUnscoped() {
+  const box = $("#unscoped"); box.replaceChildren(); RU = []; target = RU;
+  const latest = D.semesters.filter(s => s.joins >= 20).slice(-8); // at most 8 colored series
+  const color = {}; latest.forEach((s, i) => color[s.key] = SER(i));
+  const metrics = {mean: ["Avg", true], median: ["Median", true], p90: ["90th percentile", true], max: ["Max", true], sd: ["Std dev", true], joins: ["Joins", false], n: ["Sessions measured", false]};
+  const terms = new Set(TERMS);
+  let metric = "mean";
+  const mSel = h("select", {}, Object.entries(metrics).map(([k, v]) => h("option", {value: k}, v[0] + (v[1] ? " time-to-service" : ""))));
+  const chips = TERMS.map(t => h("span", {class: "chip on", on: {click: e => { terms.has(t) ? terms.delete(t) : terms.add(t); e.target.classList.toggle("on"); draw(); }}}, t));
+  const minN = h("input", {type: "number", min: 1, value: 10, style: "width:64px"});
+  const host = h("div", {class: "chart"}), lg = h("div", {class: "legend"});
+  const off = new Set(); // semesters the user has switched off (colors stay fixed per semester)
+  const setAll = on => { off.clear(); if (!on) latest.forEach(s => off.add(s.key)); draw(); };
+  function draw() {
+    metric = mSel.value;
+    const shown = latest.filter(s => terms.has(s.term));
+    lg.replaceChildren(...shown.map(s => h("button", {class: "chip" + (off.has(s.key) ? "" : " on"), "aria-pressed": String(!off.has(s.key)),
+        title: "Click to show/hide " + s.key, on: {click: () => { off.has(s.key) ? off.delete(s.key) : off.add(s.key); draw(); }}},
+      h("i", {class: "sw", style: "background:" + color[s.key]}), s.key)),
+      h("button", {on: {click: () => setAll(true)}}, "Show all"), h("button", {on: {click: () => setAll(false)}}, "Hide all"));
+    const series = shown.filter(s => !off.has(s.key)).map(s => ({name: s.key, color: color[s.key],
+      pts: s.weeks.map(w => ({x: w.week, y: metrics[metric][1] ? (w.n >= +minN.value ? w[metric] : null) : w[metric], n: w.n}))}));
+    RU = RU.filter(f => f.__w !== 1);
+    const f = () => xyChart(host, {series, dur: metrics[metric][1], xFmt: x => "Wk " + x, tipX: x => "Week " + x + " of semester", xTitle: "Week of semester", height: 300, title: "Weekly comparison across semesters",
+      xTicks: [...new Set(series.flatMap(s => s.pts.map(p => p.x)))].sort((a, b) => a - b).filter((_, i, a) => a.length < 18 || i % 2 === 0)});
+    f.__w = 1; regU(f);
+  }
+  mSel.onchange = draw; minN.onchange = draw;
+  box.append(card("Semesters superimposed by week", "Each line is one semester, aligned by week of semester so Fall 2024, Fall 2025… overlay. " + (D.semesters.length > 8 ? "Showing the 8 most recent semesters; older ones are in the tables." : ""),
+    h("div", {class: "row"}, h("label", {class: "ctl"}, "Metric ", mSel), chips, h("label", {class: "ctl"}, "Hide weeks with fewer than ", minN, " sessions (wait metrics)")), host,
+    h("p", {class: "note"}, "Click a semester below to show or hide its line."), lg));
+  draw();
+
+  // semester stats table
+  const rows = D.semesters.slice().reverse().concat([Object.assign({key: "All semesters"}, D.all)]);
+  box.append(card("Semester statistics", "min / max / avg / standard deviation of time-to-service per semester",
+    table([{h: "Semester", f: r => r.key}, {h: "Joins", f: r => num(r.joins)}].concat(statCols(r => r.stats), [{h: "Peak queue", f: r => { const p = r.superlatives.find(x => x.id === "peak_queue"); return p ? num(p.value) : "–"; }}]), rows, {rowCls: r => r.key === "All semesters" ? "total" : ""})));
+
+}
+
+// ---------- admin overview + compare ------------------------------------------------------
+let HIDDEN = 0, ROOMS = [], picked = new Set(), sortKey = "joins", sortDir = -1;
+async function openOverview() {
+  $("#title").textContent = "QueUp Logview – all rooms";
+  $("#subtitle").textContent = (LV.admin ? "Admin view: you can open and compare every room." : "Everyone can see these summary statistics. You can open and compare only the rooms you own.");
+  $("#app").replaceChildren(h("div", {class: "skeleton"}, "Analyzing every room log… (the first load can take several seconds; results are cached after that)"));
+  try { ROOMS = await api({api: "rooms"}); } catch (e) { return showError(e); }
+  HIDDEN = ROOMS.filter(r => r.joins <= 1).length;
+  ROOMS = ROOMS.filter(r => r.joins > 1); // drop rooms with no joins or a single join
+  const m = /^#compare=([A-Z0-9,]+)$/.exec(location.hash);
+  const own = new Set(ROOMS.filter(r => r.owned).map(r => r.room));
+  picked = new Set((m ? m[1].split(",") : []).filter(x => own.has(x)));
+  renderOverview();
+  if (picked.size) compare();
+}
+function renderOverview() {
+  RS = []; RU = []; target = RU;
+  const app = $("#app"); app.replaceChildren();
+  const filt = h("input", {type: "text", placeholder: "Filter rooms…", style: "min-width:180px"});
+  const mine = h("input", {type: "checkbox"}), body = h("div"), cmpBtn = h("button", {}, "Compare selected rooms"), count = h("span", {class: "muted"});
+  const cols = [
+    ["room", "Room", r => r.room, "l"], ["subtitle", "Subtitle", r => r.subtitle, "l pii sub"],
+    ["first", "First activity", r => fmtDate(r.first), ""], ["last", "Last activity", r => fmtDate(r.last), ""],
+    ["joins", "Joins", r => num(r.joins), ""], ["n", "Measured", r => num(sv(r.stats, "n")), ""],
+    ["mean", "Avg", r => dur(sv(r.stats, "mean")), ""], ["median", "Median", r => dur(sv(r.stats, "median")), ""],
+    ["p90", "p90", r => dur(sv(r.stats, "p90")), ""], ["max", "Max", r => dur(sv(r.stats, "max")), ""]];
+  const val = (r, k) => k === "room" || k === "subtitle" ? r[k] : k === "first" || k === "last" || k === "joins" ? r[k] : sv(r.stats, k);
+  function draw() {
+    const q = filt.value.trim().toLowerCase();
+    const rows = ROOMS.filter(r => (!mine.checked || r.owned) && (!q || r.room.toLowerCase().includes(q) || (r.subtitle || "").toLowerCase().includes(q)))
+      .sort((a, b) => { const x = val(a, sortKey), y = val(b, sortKey); return (x == null) - (y == null) || (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+    const t = h("table", {}, h("thead", {}, h("tr", {}, h("th", {class: "l"}, ""), cols.map(c => h("th", {class: "sortable " + c[3], on: {click: () => { sortDir = sortKey === c[0] ? -sortDir : -1; sortKey = c[0]; draw(); }}}, c[1] + (sortKey === c[0] ? (sortDir < 0 ? " ▼" : " ▲") : ""))), h("th", {}, ""))),
+      h("tbody", {}, rows.map(r => h("tr", {class: r.joins < 20 ? "thin" : ""},
+        h("td", {class: "l"}, !r.owned ? "" : h("input", {type: "checkbox", checked: picked.has(r.room) ? "" : null, "aria-label": "Select " + r.room, on: {change: e => { e.target.checked ? picked.add(r.room) : picked.delete(r.room); updateCount(); }}})),
+        cols.map(c => h("td", {class: c[3]}, c[0] === "room" ? (r.owned ? h("a", {href: "?room=" + r.room}, r.room) : r.room) : c[2](r))),
+        h("td", {}, r.owned ? h("a", {href: "?room=" + r.room}, "Open →") : h("span", {class: "muted", title: "You are not an owner of this room"}, "–"))))));
+    body.replaceChildren(h("div", {class: "tablewrap"}, t));
+  }
+  function updateCount() { count.textContent = picked.size + " selected" + (picked.size > 8 ? " (max 8 – first 8 are used)" : ""); location.hash = picked.size ? "compare=" + [...picked].join(",") : ""; }
+  filt.oninput = draw; mine.onchange = draw; cmpBtn.onclick = () => { if (picked.size < 1) return; compare(); };
+  const tj = ROOMS.reduce((a, r) => a + r.joins, 0);
+  app.append(card("Rooms (" + ROOMS.length + ")", num(tj) + " joins across all rooms. Greyed rooms have fewer than 20 joins. Only rooms you own are links. " + HIDDEN + " rooms with no joins or only one join are hidden.",
+    h("div", {class: "row"}, filt, h("label", {class: "ctl"}, mine, "Only rooms I own (" + ROOMS.filter(r => r.owned).length + ")"), cmpBtn, count), body), h("div", {id: "cmp"}));
+  draw(); updateCount();
+}
+
+async function compare() {
+  const rooms = [...picked].slice(0, 8), box = $("#cmp");
+  box.replaceChildren(h("div", {class: "skeleton"}, "Loading comparison…"));
+  let data;
+  try { data = await api({api: "compare", rooms: rooms.join(",")}); } catch (e) { box.replaceChildren(h("div", {class: "err"}, e.message)); return; }
+  RS = []; RU = []; target = RU;
+  box.replaceChildren();
+  const col = {}; data.forEach((d, i) => col[d.room] = SER(i));
+  const names = data.map(d => ({name: d.room + (d.subtitle ? " – " + (d.subtitle.length > 32 ? d.subtitle.slice(0, 32) + "…" : d.subtitle) : ""), color: col[d.room]}));
+  // summary table
+  const pk = d => { const p = d.all.superlatives.find(x => x.id === "peak_queue"); return p ? p.value : null; };
+  box.append(card("Room comparison – all time", null, h("div", {class: "row"}, legend(names)),
+    table([{h: "Room", f: d => h("span", {}, h("span", {class: "legend"}, h("i", {class: "sq", style: "background:" + col[d.room]})), d.room)},
+      {h: "First", f: d => fmtDate(d.first)}, {h: "Last", f: d => fmtDate(d.last)}, {h: "Joins", f: d => num(d.all.joins)}, {h: "Students", f: d => num(d.all.students)},
+      {h: "Active days", f: d => num(d.all.days)}].concat(statCols(d => d.all.stats).slice(1), [{h: "Peak queue", f: d => num(pk(d))}]), data)));
+
+  // weekly overlay
+  const keys = [...new Set(data.flatMap(d => d.semesters.map(s => s.key)))].sort((a, b) => { const [ta, ya] = a.split(" "), [tb, yb] = b.split(" "); return (yb - ya) || (TERMS.indexOf(tb) - TERMS.indexOf(ta)); });
+  const kSel = h("select", {}, h("option", {value: "all"}, "All semesters pooled"), keys.map(k => h("option", {value: k}, k)));
+  const mets = {mean: "Avg time-to-service", median: "Median time-to-service", p90: "90th percentile", max: "Max time-to-service", joins: "Joins"};
+  const mSel = h("select", {}, Object.entries(mets).map(([k, v]) => h("option", {value: k}, v)));
+  const host = h("div", {class: "chart"});
+  const drawW = () => {
+    const isDur = mSel.value !== "joins";
+    const series = data.map(d => { const S = kSel.value === "all" ? d.all : d.semesters.find(s => s.key === kSel.value);
+      return {name: d.room, color: col[d.room], pts: S ? S.weeks.filter(w => !isDur || w.n >= 10).map(w => ({x: w.week, y: w[mSel.value]})) : []}; });
+    const f = () => xyChart(host, {series, dur: isDur, xFmt: x => "Wk " + x, tipX: x => "Week " + x, xTitle: "Week of semester", height: 300, title: "Weekly comparison"});
+    f.__w = 1; RU = RU.filter(x => x.__w !== 1); regU(f);
+  };
+  kSel.onchange = mSel.onchange = drawW;
+  box.append(card("Week by week, room vs room", "Week of semester on the x axis (week 1 is the week classes begin). Wait metrics skip weeks with fewer than 10 sessions.",
+    h("div", {class: "row"}, h("label", {class: "ctl"}, "Semester ", kSel), h("label", {class: "ctl"}, "Metric ", mSel)), host));
+  drawW();
+
+  // room x semester matrix
+  const mx = h("select", {}, Object.entries(mets).map(([k, v]) => h("option", {value: k}, v))), mxBox = h("div");
+  const drawM = () => {
+    const k = mx.value, isDur = k !== "joins";
+    const cell = (d, key) => { const S = d.semesters.find(s => s.key === key); if (!S) return null; return isDur ? sv(S.stats, k) : S.joins; };
+    const vals = data.flatMap(d => keys.map(key => cell(d, key))).filter(v => v != null), max = Math.max(...vals, 1);
+    mxBox.replaceChildren(h("div", {class: "tablewrap"}, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Room"), keys.map(key => h("th", {}, key)))),
+      h("tbody", {}, data.map(d => h("tr", {}, h("td", {}, d.room), keys.map(key => { const v = cell(d, key);
+        return h("td", v == null ? {class: "muted"} : {style: `background:${ramp(v / max)};color:${inkOn(v / max)}`}, v == null ? "–" : isDur ? dur(v) : num(v)); })))))));
+  };
+  mx.onchange = drawM;
+  box.append(card("Room × semester matrix", "Darker = higher. Same metric for every room and semester.", h("div", {class: "row"}, h("label", {class: "ctl"}, "Metric ", mx)), mxBox));
+  drawM();
+
+  // hour-of-day profile + distribution
+  const hp = h("div", {class: "chart"}), dd = h("div", {class: "chart"});
+  const labels = ["<30s", "30s–1m", "1–2m", "2–5m", "5–10m", "10–20m", "20–30m", "30–60m", "1–2h", ">2h"];
+  box.append(h("div", {class: "grid g-2"},
+    card("When students show up", "Share of each room's joins by hour of day", h("div", {class: "row"}, legend(names)), hp),
+    card("How long they wait", "Share of each room's sessions by wait-time bucket", dd)));
+  reg(() => xyChart(hp, {series: data.map(d => { const tot = d.all.heat.joins.flat().reduce((a, b) => a + b, 0) || 1;
+      return {name: d.room, color: col[d.room], pts: [...Array(24).keys()].map(hr => ({x: hr, y: 100 * d.all.heat.joins.reduce((a, r) => a + r[hr], 0) / tot}))}; }),
+    xFmt: x => hr12(x), tipX: x => hr12(x) + "–" + hr12((x + 1) % 24), yFmt: v => +v.toFixed(1) + "%", height: 260, xTicks: [0, 3, 6, 9, 12, 15, 18, 21], title: "Joins by hour"}));
+  reg(() => xyChart(dd, {series: data.map(d => { const tot = d.all.hist.reduce((a, b) => a + b, 0) || 1;
+      return {name: d.room, color: col[d.room], pts: d.all.hist.map((v, i) => ({x: i, y: 100 * v / tot}))}; }),
+    xFmt: i => labels[i], yFmt: v => +v.toFixed(1) + "%", height: 260, xTicks: labels.map((_, i) => i), title: "Wait distribution"}));
+  box.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+// ---------- chrome ------------------------------------------------------------------
+(function init() {
+  const capSel = $("#cap");
+  [1, 2, 4, 8, 12, 24, 72, 168].forEach(c => capSel.append(h("option", {value: c}, c + " h" + (c === LV.defaultCap ? " (default)" : ""))));
+  if (![1, 2, 4, 8, 12, 24, 72, 168].includes(CAP)) capSel.append(h("option", {value: CAP}, CAP + " h"));
+  capSel.value = CAP;
+  capSel.onchange = () => { CAP = +capSel.value; LV.room ? openRoom(LV.room) : openOverview(); };
+  const hide = $("#hide");
+  hide.onchange = () => document.body.classList.toggle("names-hidden", hide.checked);
+  const themeBtn = $("#theme"), modes = ["auto", "light", "dark"];
+  let mode = "auto"; try { mode = localStorage.getItem("lv-theme") || "auto"; } catch (e) {}
+  const apply = () => {
+    if (mode === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = mode;
+    themeBtn.textContent = "Theme: " + mode;
+    try { localStorage.setItem("lv-theme", mode); } catch (e) {}
+    redrawAll(); // heatmap colours depend on theme
+  };
+  themeBtn.onclick = () => { mode = modes[(modes.indexOf(mode) + 1) % 3]; apply(); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => redrawAll());
+  apply();
+  if (LV.room) openRoom(LV.room); else openOverview();
+})();
+</script>
+</body>
+</html>
