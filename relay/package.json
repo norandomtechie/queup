@@ -1,0 +1,10 @@
+{
+  "name": "queup-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "QueUp live-update and offline relay (see P2P.md)",
+  "main": "server.js",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

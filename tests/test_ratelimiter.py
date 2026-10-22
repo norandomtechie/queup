@@ -33,7 +33,7 @@ def hit(user, query):
 
 
 def test_buckets():
-    assert rl.bucket_for(env("x", "setup=true&action=signalsend&room=AAAAA")) == "mesh"
+    assert rl.bucket_for(env("x", "setup=true&action=offlinesync&room=AAAAA")) == "mesh"
     assert rl.bucket_for(env("x", "sseupdate=true&room=AAAAA")) == "mesh"
     assert rl.bucket_for(env("x", "action=add&room=AAAAA&queue=q")) == "action"
     assert rl.bucket_for(env("x", "setup=true&action=del&room=AAAAA")) == "action"
@@ -62,11 +62,11 @@ def test_rejected_retries_do_not_extend_the_lockout(user):
 
 def test_mesh_traffic_never_uses_the_action_budget(user):
     for _ in range(20):
-        assert hit(user, "setup=true&action=signalsend&room=AAAAA")[1] is False
+        assert hit(user, "setup=true&action=offlinesync&room=AAAAA")[1] is False
     assert hit(user, "action=add&room=AAAAA&queue=q") == ("action", False)
 
 
 def test_mesh_budget_is_still_enforced(user):
     limit = rl.LIMITS["mesh"][0]
-    results = [hit(user, "setup=true&action=peerheartbeat&room=AAAAA")[1] for _ in range(limit + 1)]
+    results = [hit(user, "setup=true&action=peerleave&room=AAAAA")[1] for _ in range(limit + 1)]
     assert results[:limit] == [False] * limit and results[limit] is True

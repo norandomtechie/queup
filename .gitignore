@@ -14,4 +14,7 @@ app*
 proc*
 ratelimit_bypass
 logview_admins
-!tests/turn_check.py
+relay_secret
+relay_url
+relay_publish_url
+!relay/package.json

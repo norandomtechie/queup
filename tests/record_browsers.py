@@ -11,77 +11,32 @@ from playwright.async_api import async_playwright
 # runs before the page's own scripts
 INIT_SCRIPT = r"""
 (() => {
-  const Orig = window.RTCPeerConnection;
-  if (!Orig) return;
+  const Orig = window.WebSocket;
   let n = 0;
-  // describe a candidate without its actual address
-  const kind = (c) => {
-    const a = c.address || c.ip || "";
-    const fam = a.endsWith(".local") ? "mdns" : a.includes(":") ? "ipv6" : a ? "ipv4" : "?";
-    return (c.candidateType || c.type) + "/" + (c.protocol || "?") + "/" + fam +
-      (c.relayProtocol ? "(relay-" + c.relayProtocol + ")" : "");
+  // log the relay connection's life without its token
+  window.WebSocket = function (url, protocols) {
+    const ws = new Orig(url, protocols);
+    const id = "ws" + (++n), t0 = Date.now(), host = new URL(url).host + new URL(url).pathname;
+    console.log("[rec] " + id + " connecting to " + host);
+    ws.addEventListener("open", () => console.log("[rec] " + id + " open after " + (Date.now() - t0) + "ms"));
+    ws.addEventListener("close", (e) => console.log("[rec] " + id + " closed code=" + e.code + " after " + Math.round((Date.now() - t0) / 1000) + "s"));
+    return ws;
   };
-  async function describePath(pc, id) {
-    try {
-      const stats = await pc.getStats();
-      const byId = {}; stats.forEach(s => byId[s.id] = s);
-      let pair = null; const states = {};
-      stats.forEach(s => {
-        if (s.type === "candidate-pair") {
-          states[s.state] = (states[s.state] || 0) + 1;
-          if (s.nominated && s.state === "succeeded") pair = s;
-        }
-      });
-      const local = [], remote = [];
-      stats.forEach(s => { if (s.type === "local-candidate") local.push(kind(s)); if (s.type === "remote-candidate") remote.push(kind(s)); });
-      console.log("[rec] " + id + " candidates local=[" + [...new Set(local)].join(" ") + "] remote=[" + [...new Set(remote)].join(" ") +
-        "] pairs=" + JSON.stringify(states) +
-        (pair ? " via " + kind(byId[pair.localCandidateId] || {}) + " -> " + kind(byId[pair.remoteCandidateId] || {}) : " (no working pair)"));
-    } catch (e) { console.log("[rec] " + id + " stats failed: " + e); }
-  }
-  window.RTCPeerConnection = function (...args) {
-    const pc = new Orig(...args);
-    const id = "pc" + (++n);
-    const cfg = args[0] || {};
-    const servers = (cfg.iceServers || []).map(s => [].concat(s.urls).join(",")).join(" ");
-    console.log("[rec] " + id + " created" + (cfg.iceTransportPolicy === "relay" ? " (relay-only test)" : "") + " servers=" + servers);
-    pc.addEventListener("connectionstatechange", () => {
-      console.log("[rec] " + id + " connection=" + pc.connectionState);
-      if (["connected", "failed"].includes(pc.connectionState)) describePath(pc, id);
-    });
-    pc.addEventListener("iceconnectionstatechange", () => console.log("[rec] " + id + " ice=" + pc.iceConnectionState));
-    pc.addEventListener("icegatheringstatechange", () => { if (pc.iceGatheringState === "complete") describePath(pc, id); });
-    return pc;
-  };
-  window.RTCPeerConnection.prototype = Orig.prototype;
+  window.WebSocket.prototype = Orig.prototype;
+  ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach(k => window.WebSocket[k] = Orig[k]);
 
-  // Two connections in this page that may only use the TURN relay: they
-  // connect only if this browser, on this network, can actually use it.
-  window.__turnTest = async () => {
-    const servers = window.iceServers;
-    if (!servers) return "no iceServers yet (not joined?)";
-    const results = [];
-    for (const transport of ["udp", "tcp"]) {
-      const only = servers.filter(s => [].concat(s.urls).some(u => u.startsWith("turn:") &&
-        (transport === "tcp" ? u.includes("transport=tcp") : !u.includes("transport=tcp"))));
-      if (!only.length) { results.push(transport + ": no such server"); continue; }
-      const a = new RTCPeerConnection({iceServers: only, iceTransportPolicy: "relay"});
-      const b = new RTCPeerConnection({iceServers: only, iceTransportPolicy: "relay"});
-      let relays = 0;
-      a.onicecandidate = e => { if (e.candidate) { relays++; b.addIceCandidate(e.candidate).catch(() => {}); } };
-      b.onicecandidate = e => { if (e.candidate) a.addIceCandidate(e.candidate).catch(() => {}); };
-      const dc = a.createDataChannel("t");
-      const opened = new Promise(res => { dc.onopen = () => res(true); setTimeout(() => res(false), 10000); });
-      await a.setLocalDescription(await a.createOffer());
-      await b.setRemoteDescription(a.localDescription);
-      await b.setLocalDescription(await b.createAnswer());
-      await a.setRemoteDescription(b.localDescription);
-      const ok = await opened;
-      results.push(transport + ": " + (ok ? "OK" : "FAILED") + " (" + relays + " relay candidates)");
-      a.close(); b.close();
-    }
-    return results.join("; ");
-  };
+  // A second connection to the relay with this tab's token: does this browser, on this network, reach it?
+  window.__relayTest = () => new Promise((resolve) => {
+    const info = window.relayInfo;
+    if (!info) return resolve("no relay token yet (not joined, or relay off)");
+    const t0 = Date.now();
+    const ws = new Orig(info.url + "?token=" + encodeURIComponent(info.token));
+    const done = (msg) => { try { ws.close(); } catch (e) {} resolve(msg); };
+    const timer = setTimeout(() => done("FAILED: no answer in 10s from " + new URL(info.url).host), 10000);
+    ws.onmessage = (m) => { clearTimeout(timer); const j = JSON.parse(m.data);
+      done("OK: " + j.type + " in " + (Date.now() - t0) + "ms, " + j.count + " tabs in the room"); };
+    ws.onclose = (e) => { clearTimeout(timer); done("FAILED: closed with code " + e.code + " after " + (Date.now() - t0) + "ms"); };
+  });
 })();
 """
 
@@ -89,16 +44,12 @@ STATE_JS = r"""
 () => {
   if (typeof window.peerid === "undefined") return {loaded: false};
   const short = (x) => x ? String(x).slice(0, 8) : null;
-  const links = typeof openLinks === "function" ? openLinks().map(l => (l.upstream ? "up:" : "down:") + short(l.peerid)) : [];
   return {
     room: window.roomname || null,
     me: short(window.peerid),
-    host: window.currentHost ? short(window.currentHost.peerid) + (window.currentHost.owner ? "*" : "") : null,
-    amIHost: !!window.amIHost,
-    links: links,
-    pending: window.pendingConn ? short(window.pendingConn.hostId) : null,
-    peers: (window.knownPeers || []).map(p => short(p.peerid) + (p.owner ? "*" : "")),
-    relying: !!window.relyingOnHost,
+    relay: window.relay ? ["connecting", "open", "closing", "closed"][window.relay.readyState] : null,
+    others: typeof meshUserCount === "function" ? meshUserCount() : null,
+    relying: !!window.relyingOnRelay,
     ownSSE: window.evtSource ? ["connecting", "open", "closed"][window.evtSource.readyState] : null,
     sseDown: window.sseDownSince !== null && window.sseDownSince !== undefined,
     outage: !!window.confirmedOutage,
@@ -208,10 +159,10 @@ async def main():
             if cmd == "t":
                 for b in browsers:
                     try:
-                        res = await b["page"].evaluate("window.__turnTest()")
+                        res = await b["page"].evaluate("window.__relayTest()")
                     except Exception as e:
                         res = "error: " + str(e)[:120]
-                    rec.log(b["label"], "NOTE", "TURN self-test: " + res)
+                    rec.log(b["label"], "NOTE", "relay self-test: " + res)
                 continue
             if cmd == "s":
                 for b in browsers:

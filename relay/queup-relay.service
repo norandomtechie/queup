@@ -1,0 +1,19 @@
+[Unit]
+Description=QueUp relay (live room updates and offline actions)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ece270
+WorkingDirectory=/home/ece270/queup-relay
+ExecStart=/home/ece270/node/bin/node /home/ece270/queup-relay/server.js
+Environment=RELAY_PORT=8443
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
