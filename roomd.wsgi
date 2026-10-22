@@ -643,17 +643,24 @@ def sseupdate(environ, start_response):
     yield ("data: %s\n\n" % json.dumps(build_payload())).encode()
     start_time = time()
     LIMIT = 60
-    # A periodic keepalive comment lets us notice clients that have gone away
-    KEEPALIVE = 15
+    # Keepalive comment at least every 5s, even with no Redis traffic: the load balancer drops
+    # connections silent for ~10s, and writing is also how we notice clients that have gone away
+    KEEPALIVE = 5
     last_write = time()
     try:
         with rds.monitor() as m:
-            for command in m.listen():
+            while True:
                 if 'wsgi.errors' in environ and environ['wsgi.errors'].closed:
                     return ret_200(start_response, "data: %s\n\n" % json.dumps(build_payload()))
-                cmd = command['command'].lower()
                 if (time() - start_time) > LIMIT:
                     return ret_200(start_response, "data: %s\n\n" % json.dumps(build_payload()))
+                # wait for the next monitored command, but no longer than the keepalive interval
+                wait = max(0.1, KEEPALIVE - (time() - last_write))
+                if not m.connection.can_read(timeout=wait):
+                    last_write = time()
+                    yield b": keepalive\n\n"
+                    continue
+                cmd = m.next_command()['command'].lower()
                 is_room_change = "del room"+room.lower() in cmd or "set room"+room.lower() in cmd
                 # Match only HSET for signals: MONITOR also sees every read, including our own
                 is_peerjoin = "peerjoin"+room.lower() in cmd
@@ -677,7 +684,7 @@ def sseupdate(environ, start_response):
                             sys.exit(0)
                         except:
                             os._exit(0)
-                elif time() - last_write > KEEPALIVE:
+                elif time() - last_write >= KEEPALIVE:
                     last_write = time()
                     yield b": keepalive\n\n"
     except GeneratorExit:
