@@ -432,8 +432,11 @@ def slow_server_backlog_cannot_undo_later_actions(pw):
         act(stud, "add")                           # stuck on the "server"
         pump(stud, 0.7)
         act(stud, "del")                           # also stuck
-        wait_for(lambda: stud.evaluate("window.confirmedOutage"), 3, "slow requests to trigger offline mode")
-        assert time.time() - t0 < 3.5, "fallback took longer than ~2s"
+        # each action goes over the mesh after ~2s, but only the request timing out (8s) counts as an outage
+        wait_for(lambda: stud.evaluate("Object.keys(window.journal).length") >= 1, 4, "the slow action to go over the mesh")
+        assert time.time() - t0 < 4.5, "fallback took longer than ~2s"
+        assert not stud.evaluate("window.confirmedOutage"), "a merely slow request switched the tab to offline mode"
+        wait_for(lambda: stud.evaluate("window.confirmedOutage"), 12, "the timed-out request to count as an outage")
         assert len(hold.held) == 2
         act(stud, "add")                           # rejoin: goes straight over the mesh
         wait_for(lambda: view(staff, env.room) == ["tstud1"], 5, "rejoin to reach the host")
@@ -827,6 +830,38 @@ def p2p_toggle_falls_back_to_server(pw):
         env.close()
 
 
+# Every connection this browser makes fails (relay-only through a TURN server that doesn't exist)
+UNREACHABLE = """(() => {
+    const Orig = window.RTCPeerConnection;
+    window.RTCPeerConnection = function (cfg) {
+        return new Orig({iceServers: [{urls: "turn:192.0.2.1:3478", username: "x", credential: "y"}], iceTransportPolicy: "relay"});
+    };
+    window.RTCPeerConnection.prototype = Orig.prototype;
+})();"""
+
+
+def unreachable_host_is_retried_with_backoff(pw):
+    """When connections can't form (no TURN reachable), a tab backs off instead of re-signaling every few seconds."""
+    env = Env(pw)
+    try:
+        staff = env.page(STAFF)
+        stud = env.page(STUD, init_script=UNREACHABLE)
+        offers = []
+        stud.on("request", lambda r: offers.append(time.time()) if "action=signalsend" in r.url and '"type":"offer"' in (r.post_data or "") else None)
+        end = time.time() + 100
+        flip = False
+        while time.time() < end:                      # a room update every 5s, like a busy queue
+            env.api.get(f"{BASE}/roomd.wsgi?action={'del' if flip else 'add'}&room={env.room}&queue={Q}&waitdata=x")
+            flip = not flip
+            pump(stud, 5)
+        gaps = [b - a for a, b in zip(offers, offers[1:])]
+        # attempts thin out (each wait about twice the last) despite an update every 5s
+        assert 1 <= len(offers) <= 4 and all(b > a * 1.3 for a, b in zip(gaps, gaps[1:])), [round(t - offers[0]) for t in offers]
+        assert stud.evaluate("window.connectFailures") >= 2
+    finally:
+        env.close()
+
+
 def malicious_mesh_data_is_not_rendered(pw):
     """HTML smuggled in through the mesh (an envelope's waitdata, or a doctored room update) must never run."""
     env = Env(pw)
@@ -872,7 +907,7 @@ SCENARIOS = [full_cycle, originator_gone, reopened_tab_syncs,
              crowded_join_is_not_rate_limited, host_signed_out, malicious_mesh_data_is_not_rendered,
              student_host_cannot_relay_room_state, signals_bound_to_their_owner,
              student_host_cannot_fake_staff_actions_downstream, idle_tab_pauses_and_keeps_its_place,
-             p2p_toggle_falls_back_to_server]
+             p2p_toggle_falls_back_to_server, unreachable_host_is_retried_with_backoff]
 
 if __name__ == "__main__":
     wanted = sys.argv[1:]
