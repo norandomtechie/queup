@@ -811,6 +811,38 @@ def malicious_relayed_data_is_not_rendered(pw):
         env.close()
 
 
+# The deployment under test, on disk (the suite runs on a host that shares the web tree)
+PAGE = os.environ.get("QUEUP_PAGE", "/home/min/a/menon18/web/queup-dev/app.html")
+
+
+def deploy_makes_open_pages_update(pw):
+    """A deploy that changes the page reaches open tabs: they reload themselves, but not while someone is typing."""
+    env = Env(pw)
+    try:
+        staff, stud = env.page(STAFF), env.page(STUD)
+        relay_up(staff, stud)
+        wait_for(lambda: stud.evaluate("window.pageBuild") is not None, 10, "the tab to note its own build")
+        stud.evaluate("""window.__beforeUpdate = true;
+            const i = document.createElement('input'); i.id = '__typing'; document.body.appendChild(i); i.focus(); 0""")
+        os.utime(PAGE, None)                  # a deploy: the page's file changes
+        env.api_add()                          # the next update carries the new build
+        wait_for(lambda: stud.is_visible("#updatebanner"), 70, "the update banner while the student is typing")
+        assert stud.evaluate("window.__beforeUpdate") is True, "the page reloaded while someone was typing"
+        stud.evaluate("document.getElementById('__typing').blur(); 0")
+
+        def reloaded():
+            try:
+                return stud.evaluate("window.__beforeUpdate === undefined && window.roomname") == env.room
+            except Exception:
+                return False                   # mid-navigation
+        wait_for(reloaded, 40, "the page to reload itself once nobody is typing")
+        relay_up(stud)
+        assert not stud.is_visible("#updatebanner")
+        assert not stud.errors, stud.errors
+    finally:
+        env.close()
+
+
 SCENARIOS = [full_cycle, originator_gone, reopened_tab_syncs,
              rejection_alert_only_for_originator, one_peer_offline_no_storage, storage_blocked_entirely,
              staff_actions_offline, forged_actions_dropped_by_relay,
@@ -820,7 +852,7 @@ SCENARIOS = [full_cycle, originator_gone, reopened_tab_syncs,
              stale_pending_action_does_not_hide_newer_state, outage_switch_and_status_badges,
              rename_queue_while_on_relay, crowded_join_is_not_rate_limited, signed_out_tab_is_synced_by_others,
              tabs_cannot_send_room_state, idle_tab_pauses_and_keeps_its_place, relay_toggle_falls_back_to_server,
-             malicious_relayed_data_is_not_rendered]
+             malicious_relayed_data_is_not_rendered, deploy_makes_open_pages_update]
 
 if __name__ == "__main__":
     wanted = sys.argv[1:]
