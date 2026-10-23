@@ -1,5 +1,5 @@
 "use strict";
-// QueUp relay: pushes live room updates to browsers and passes signed offline actions between them (see P2P.md)
+// QueUp relay: pushes live room updates to browsers and passes signed offline actions between them (see RELAY.md)
 const fs = require("fs");
 const path = require("path");
 const https = require("https");

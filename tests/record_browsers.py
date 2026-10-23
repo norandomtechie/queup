@@ -1,4 +1,4 @@
-"""Record a Chrome and a Firefox session on a room for debugging (see P2P.md, Testing)."""
+"""Record a Chrome and a Firefox session on a room for debugging (see RELAY.md, Testing)."""
 import argparse
 import asyncio
 import datetime

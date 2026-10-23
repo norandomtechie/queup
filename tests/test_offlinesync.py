@@ -1,4 +1,4 @@
-"""Backend tests for offline sync and queue atomicity, against the queup-dev Redis (see P2P.md, Testing)."""
+"""Backend tests for offline sync and queue atomicity, against the queup-dev Redis (see RELAY.md, Testing)."""
 import base64
 import hashlib
 import hmac

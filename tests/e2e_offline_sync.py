@@ -1,4 +1,4 @@
-"""End-to-end relay and offline-sync tests against a live deployment (see P2P.md, Testing)."""
+"""End-to-end relay and offline-sync tests against a live deployment (see RELAY.md, Testing)."""
 import json
 import os
 import random

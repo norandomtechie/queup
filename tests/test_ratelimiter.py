@@ -1,4 +1,4 @@
-"""Rate limiter tests against the queup-dev Redis (see P2P.md, Testing)."""
+"""Rate limiter tests against the queup-dev Redis (see RELAY.md, Testing)."""
 import os
 import sys
 import time
