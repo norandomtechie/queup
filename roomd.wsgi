@@ -238,7 +238,7 @@ def handle_request(environ, start_response):
                 return ret_400(start_response, str(e))
         ### END ADDED
 
-        # Relay and offline actions (see P2P.md)
+        # Relay and offline actions (see RELAY.md)
         elif will_peerjoin:
             # Any participant; is_owner is computed server-side
             peerid = query.get('peerid', '')

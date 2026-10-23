@@ -1,4 +1,4 @@
-"""Relay tokens and room-change publishing for the QueUp relay on verilog (see P2P.md)."""
+"""Relay tokens and room-change publishing for the QueUp relay on verilog (see RELAY.md)."""
 import base64
 import hashlib
 import hmac

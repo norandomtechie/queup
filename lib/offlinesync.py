@@ -1,4 +1,4 @@
-"""Offline actions: per-peer signing keys, signed envelopes, and batch sync (see P2P.md)."""
+"""Offline actions: per-peer signing keys, signed envelopes, and batch sync (see RELAY.md)."""
 import base64
 import hashlib
 import hmac

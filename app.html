@@ -399,17 +399,13 @@
                 console.error(err);
             }
         }
-        // Peer-to-peer mesh state (see P2P.md)
+        // Relay and offline-mode state (see RELAY.md)
         window.peerid = null;
         window.sseDownSince = null;
         // Set once a second consecutive SSE failure rules out routine reconnect cycling
         window.confirmedOutage = false;
 
-        // One signaling queue for all peers; messages arriving mid-request ride the next one
-
-        // Bump when the mesh protocol changes; only tabs on the newest version present can host
-
-        // Offline actions are signed, journaled on every peer, and synced to the server later (see P2P.md)
+        // Offline actions are signed, journaled on every peer, and synced to the server later (see RELAY.md)
         window.signKey = null;
         window.clockOffset = 0;          // server ms - local ms
         window.offlineSeq = 0;
@@ -665,7 +661,7 @@
             sendMeshAction(e);
         }
 
-        // === Relay connection (see P2P.md) ===
+        // === Relay connection (see RELAY.md) ===
         // One WebSocket to the relay on verilog: room updates arrive over it, and offline actions are shared through it
         window.relay = null;
         window.relayInfo = null;      // {url, token} from peerjoin
@@ -1256,7 +1252,7 @@
             }
         }
 
-        // Room updates come over the relay when it's open, otherwise over this tab's own SSE (see P2P.md)
+        // Room updates come over the relay when it's open, otherwise over this tab's own SSE (see RELAY.md)
         window.lastPayloadServerTime = 0;
         function applyServerPayload(json, fromOwnSSE) {
             // Ignore payloads older than the one shown

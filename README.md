@@ -45,11 +45,11 @@ Room owners, who are typically staff members or TAs, may also "mark" a student w
 
 Room owners may also lock/unlock the room via the Settings panel to ensure that attendees cannot stuff the queue before office hours have actually started.  By default when a room is created, it is unlocked.
 
-## Peer-to-peer mode
+## Relay and offline mode
 
-In Fall 2026, plagued by server outages, QueUp was upgraded to allow rooms to operate in peer-to-peer mode. 
+In Fall 2026, plagued by server outages, QueUp was upgraded so that rooms keep working when the server is down or slow.
 
-Rooms should keep working when the server is down or slow. When you first log in, your browser will identify itself to other users' browsers in the same room connect to each other over [WebRTC](https://webrtc.org/), keep the queue going among themselves, and sync everything back when the server returns.  A badge next to the room name shows the current state.  See [P2P.md](./P2P.md) for how it works, what it needs on the server, and how to test it.
+Every open room page connects to a small relay server. While the server is up, the relay delivers live room updates, so pages don't each hold a connection to the web server. When the server is down, the browsers in a room pass queue actions to each other through the relay, keep the queue going among themselves, and sync everything back when the server returns.  A badge next to the room name shows the current state.  See [RELAY.md](./RELAY.md) for how it works, what it needs on the servers, and how to test it.
 
 ## Room Permanency
 

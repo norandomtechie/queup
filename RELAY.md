@@ -33,7 +33,7 @@ The page itself is served by the server, so it can't be loaded or reloaded while
 ```
  browser ──HTTPS──▶ engineering.purdue.edu  roomd.wsgi ──signed POST /publish──▶ relay (verilog:8443)
     ▲                                                                              │
-    └──────────── wss://verilog.ecn.purdue.edu/queup-relay (via the simulator on 443) ◀─┘
+    └──────────── wss://verilog.ecn.purdue.edu/queup-relay                       ◀─┘
 ```
 
 1. **Joining.** On joining a room, each tab picks a random peer id and calls `peerjoin`. The response carries:

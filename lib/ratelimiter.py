@@ -3,7 +3,7 @@ from urllib.parse import parse_qs
 
 import redis
 
-# Per-user fixed windows: 'action' for clicks, 'mesh' for background traffic (see P2P.md)
+# Per-user fixed windows: 'action' for clicks, 'mesh' for background traffic (see RELAY.md)
 LIMITS = {"action": (3, 1), "mesh": (60, 10)}     # bucket: (max requests, window seconds)
 MESH_ACTIONS = {"peerjoin", "peerleave", "offlinesync"}
 
