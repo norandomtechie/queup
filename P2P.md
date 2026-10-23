@@ -180,6 +180,18 @@ sudo systemctl enable --now queup-relay              # after updating server.js:
 
 **Reloading Python changes.** After changing anything under `lib/`, touch `roomd.wsgi` and `admin/admin.wsgi`. They drop cached `lib` modules when they reload.
 
+**Open pages update themselves.** Every room update carries a `build` stamp: `app.html`'s modification time. A page remembers the stamp from its first room check, and when a later update carries a different one, it reloads itself at a random moment within a minute, so tabs don't all come back at once. While someone is typing, the page is offline, or it holds unsynced offline actions, it shows a "QueUp has been updated" banner instead and tries again every 30s. If a reload still brings back the old page (a cached copy), it keeps the banner, which asks for a hard refresh, rather than reloading in a loop. Deploys that don't change `app.html` don't reload anything. Pages from before this feature (before 2026-10-23) don't have it.
+
+**Announcing to every room.** `utils/announce.py` in the private repo sends a message to rooms as a staff broadcast, which every page version shows as an alert ("'message' from user."). Run it on charlotte, where the Redis socket is:
+
+```
+cd /web/groups/menon18/private/queup/utils
+python3 announce.py --dry-run "QueUp will be down at 9pm."   # list the rooms it would reach
+python3 announce.py "QueUp will be down at 9pm."             # rooms used in the last 12 hours, after confirming
+```
+
+`--rooms A,B` or `--all` pick other rooms, `--hours N` changes "recently used", and `--tree queup-dev` targets dev. Each room's log records it as `rbcast`; tabs on SSE get it from the write, tabs on the relay from a publish.
+
 ## Testing
 
 The tests live in the private repo, under `private/queup-dev/tests/`, so they aren't served with the site. Paths below are relative to `private/queup-dev/`.

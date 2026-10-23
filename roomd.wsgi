@@ -30,6 +30,7 @@ from lib.wsgidefs import *
 from lib.privatepath import resolve_private_path
 from lib.offlinesync import issue_peer_key, apply_offline_batch, MAX_BATCH, get_peer_records, mark_present
 import lib.relay
+from lib.relay import room_payload, page_build
 import lib.methods
 import lib.lock
 
@@ -44,14 +45,6 @@ def request_intent(query, user):
     return at, (user + ":" + opid if re.match(PEERID_RGX, opid) else None)
 
 STALE_MSG = "[stale] A newer change was already made, so this older request was not applied."
-
-def room_payload(r, room):
-    """What every tab renders: queues, names, timer/broadcast, change times and server time."""
-    data = getusers("", room)
-    # Latest change time per user|queue, so clients can skip superseded pending actions
-    data["watermarks"] = {k.decode(): float(v) for k, v in r.hgetall("qwatermark"+room).items()}
-    data["servertime"] = time()
-    return data
 
 # Requests that can change what a room looks like; each successful one is pushed to the relay
 WRITE_ACTIONS = {"add", "del", "ren", "own", "delown", "setcool", "setsub", "lock", "unlock", "clear",
@@ -218,6 +211,7 @@ def handle_request(environ, start_response):
             userdata["is-locked"] = isroomlocked(room)
             userdata["is-permanent"] = getroompermanency(room)
             userdata["is-singlequeue"] = get1q(room)
+            userdata["build"] = page_build()
             if "admin" not in query or not is_owner:
                 lockAndWriteLog(room, ",".join([str(time()), user, "rchk", room]))
             return ret_json(start_response, json.dumps(userdata))

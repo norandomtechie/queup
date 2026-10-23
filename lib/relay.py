@@ -56,6 +56,25 @@ def publish_endpoint(private, url):
     return endpoint or url.replace("wss://", "https://", 1).replace("ws://", "http://", 1).rsplit("/", 1)[0] + "/publish"
 
 
+def page_build():
+    """app.html's modification time: it changes when a deploy changes the page, so open pages can tell they're out of date."""
+    try:
+        return str(int(os.path.getmtime(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.html"))))
+    except OSError:
+        return ""
+
+
+def room_payload(r, room):
+    """What every tab renders: queues, names, timer/broadcast, change times, server time and page build."""
+    import lib.methods
+    data = lib.methods.getusers("", room)
+    data["build"] = page_build()
+    # Latest change time per user|queue, so clients can skip superseded pending actions
+    data["watermarks"] = {k.decode(): float(v) for k, v in r.hgetall("qwatermark"+room).items()}
+    data["servertime"] = time.time()
+    return data
+
+
 def publish(private, room, data):
     """Send a room's current state (or {} once deleted) to the relay, retrying once; tabs re-check the server if one is lost."""
     global _down_until, _failures

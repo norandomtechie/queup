@@ -67,6 +67,10 @@
             <span>This room was paused after an hour of inactivity. Your place in any queue is kept.</span>
             <button class="btn" onclick="reloadRoom()">Reconnect</button>
         </div>
+        <div id="updatebanner">
+            <span>QueUp has been updated. Please reload this page to use the new version (Ctrl-Shift-R on Windows/Linux, Cmd+Shift+R on macOS). Your place in any queue is kept.</span>
+            <button class="btn" onclick="location.reload()">Reload</button>
+        </div>
         <div class="container" id="timer">
             <div id="innertimer">
                 <h3 id="timertext" contenteditable onblur="checkTime(event)" onkeydown="checkTime(event)">2:00:00</h3>
@@ -565,6 +569,7 @@
             out.watermarks = {};
             Object.keys(data.watermarks || {}).forEach(k => { if (typeof data.watermarks[k] === "number") out.watermarks[k] = data.watermarks[k]; });
             if (typeof data.servertime === "number") out.servertime = data.servertime;
+            if (typeof data.build === "string") out.build = data.build;
             return out;
         }
 
@@ -1088,6 +1093,8 @@
                 document.getElementById("toggleroomlock").innerHTML = "Lock Room";
             addRoom(roomname, roomsubtitle);
             genRoom(roomname, JSON.parse(j));
+            window.pageBuild = null;
+            noteBuild(JSON.parse(j).build);
             // the room is drawn: put away the join panel now, not when an SSE stream opens (tabs on the relay never open one)
             document.getElementsByClassName("queueoverlay")[0].style.display = "none";
             window.roomname = roomname;
@@ -1260,6 +1267,7 @@
             window.serverJSON = json;
             window.payloadCount++;
             noteServerTime(json.servertime);
+            noteBuild(json.build);
             console.log(json);
             // an empty response means the room was deleted.
             if (Object.keys(json).length == 0) {
@@ -1325,6 +1333,41 @@
             closeRelay();
             document.documentElement.setAttribute("offlinemode", "none");
             var banner = document.getElementById("idlebanner");
+            if (banner) banner.style.display = "flex";
+        }
+
+        // Open pages notice a deploy from the build stamp each room update carries (app.html's modification time).
+        // The first stamp seen, from the room check at load, is this page's own.
+        window.pageBuild = null;
+        function noteBuild(build) {
+            if (typeof build !== "string" || !/^[0-9]{1,12}$/.test(build)) return;
+            if (window.pageBuild === null) { window.pageBuild = build; return; }
+            if (build !== window.pageBuild) pageOutdated(build);
+        }
+
+        function pageOutdated(build) {
+            if (window.updatePending) return;
+            window.updatePending = true;
+            var reloadedFor = null;
+            try { reloadedFor = sessionStorage.getItem("queup_reloaded_for"); } catch (e) {}
+            // already reloaded once for this build and still old (a cached page): ask for a hard refresh instead of looping
+            if (reloadedFor === build) return showUpdateBanner();
+            // spread the reloads out, so a deploy doesn't bring every open tab back in the same second
+            setTimeout(function tryReload() {
+                var el = document.activeElement;
+                var typing = el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+                // never lose unsynced offline actions or someone's half-typed text; offer the banner and try later
+                if (typing || window.sseDownSince !== null || journalEnvelopes(false).length > 0) {
+                    showUpdateBanner();
+                    return setTimeout(tryReload, 30000);
+                }
+                try { sessionStorage.setItem("queup_reloaded_for", build); } catch (e) {}
+                location.reload();
+            }, Math.random() * 60000);
+        }
+
+        function showUpdateBanner() {
+            var banner = document.getElementById("updatebanner");
             if (banner) banner.style.display = "flex";
         }
 

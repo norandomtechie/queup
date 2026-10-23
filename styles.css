@@ -66,7 +66,7 @@ nav > div {
 }
 
 /* Shown when the room's live connection is paused for inactivity */
-#idlebanner {
+#idlebanner, #updatebanner {
     display: none;
     position: fixed;
     top: 0;
